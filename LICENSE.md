@@ -1,4 +1,3 @@
-Required Notice: Copyright 2026 Pelayo Naredo (https://github.com/PelayoNaredo/pokesurvivor-luces)
 Required Notice: Copyright 2026 JPTER78 (https://github.com/JPTER78/pokesurvivor)
 
 # PolyForm Noncommercial License 1.0.0

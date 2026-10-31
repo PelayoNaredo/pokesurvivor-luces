@@ -125,4 +125,5 @@ On the extensions page, click **Remove** on the extension's card. You can then d
 - Pokémon and its names are trademarks of Nintendo, Creatures Inc. and GAME FREAK inc.
 
 This is a non-profit fan project. It is not affiliated with or endorsed by the author of
-PokéSurvivor or by the Pokémon rights holders.
+PokéSurvivor or by the Pokémon rights holders. It is provided as is, without any warranty;
+use it at your own risk.
