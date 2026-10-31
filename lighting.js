@@ -275,85 +275,50 @@
       gl_FragColor=vec4(em,occ);
     }`;
 
-  // 2a) altura de cada oclusor sobre su base: cuántos píxeles hay hasta el pie del sprite.
-  // Con esto la sombra nace de los pies del árbol o del Pokémon, no de su silueta en pantalla
-  // (la técnica de las sombras oblicuas con mapa de altura de los juegos top-down).
-  const FS_HEIGHT = HEAD + `
-    uniform sampler2D M; uniform vec2 res;
-    // ¿sigue el objeto en p? Se toleran huecos (y se mira un poco a los lados): la máscara tiene
-    // agujeros donde el sprite se parece al suelo, y las ramas de un árbol van en diagonal al tronco
-    float body(vec2 p,float dir){
-      float a=max(texture2D(M,p/res).a,max(texture2D(M,(p+vec2(0.,2.*dir))/res).a,texture2D(M,(p+vec2(0.,4.*dir))/res).a));
-      return max(a,max(texture2D(M,(p+vec2(3.,dir))/res).a,texture2D(M,(p+vec2(-3.,dir))/res).a));
-    }
-    void main(){
-      vec2 px=uv*res;
-      if(texture2D(M,uv).a<.4){gl_FragColor=vec4(0.);return;}
-      // hacia abajo (en GL la y sube) hasta el pie
-      float h=0.;
-      for(int i=1;i<=48;i++){
-        vec2 p=px-vec2(0.,float(i)*2.);
-        // el pie queda por debajo de la pantalla: altura desconocida, no proyecta sombra
-        if(p.y<1.){gl_FragColor=vec4(0.);return;}
-        float a=body(p,-1.);
-        // el pie exacto entre dos pasos: con la cámara moviéndose en fracciones de píxel, una
-        // altura que salta de 2 en 2 hace que la sombra aparezca y desaparezca
-        if(a<.4){h+=2.*smoothstep(0.,.4,a);break;}
-        h=float(i)*2.;
-      }
-      // hacia arriba hasta la copa: si el objeto se sale por el borde de arriba no se sabe lo
-      // alto que es, y su sombra entra con un fundido según asoma la copa (en vez de una sombra
-      // que crece o encoge mientras subes)
-      float gap=0.;
-      for(int i=1;i<=48;i++){
-        vec2 p=px+vec2(0.,float(i)*2.);
-        if(p.y>res.y-1.){gap=0.;break;}
-        if(body(p,1.)<.4){gap=res.y-p.y;break;}
-      }
-      gl_FragColor=vec4(h/128.,smoothstep(2.,36.,gap),0.,1.);
-    }`;
-
-  // 2b) visibilidad: luna (r) y antorcha del jugador (g). Para cada píxel del suelo se prueba
-  // cada altura posible: ¿hay un oclusor justo a esa altura sobre el punto del que vendría la sombra?
+  // 2) visibilidad: luna (r), antorcha del jugador (g) y sombra de contacto (b).
+  // Las sombras ya no se adivinan desde la imagen: la capa de sprites pinta cada sprite
+  // proyectado desde sus pies, con su forma exacta y, en verde, la altura de cada punto
+  // (ver «capa de sprites» más abajo). Aquí sólo se les da la penumbra, como hacen las
+  // sombras suaves de los motores (PCSS): primero se mira a qué altura está lo que tapa la
+  // luz y, cuanto más alto, más ancha la penumbra. Nítida al pie, difusa en la copa.
   const FS_SHADOW = HEAD + `
-    uniform sampler2D M,HT; uniform vec2 res,moonDir,center,cam; uniform float art,frame,jmode;
-    float hit(vec2 base,float h,float tol){
-      // Sólo cuenta lo que se ve. Fuera de la pantalla la textura repite su última fila, y
-      // suponer que un árbol cortado por arriba sigue subiendo daba sombras larguísimas que
-      // encogían según el árbol iba entrando al subir. La parte que aún no se ve no da sombra.
-      vec2 q=base+vec2(0.,h);
-      if(base.x<0.||base.x>res.x||base.y<0.||q.y>res.y-.5)return 0.;
-      float o=texture2D(M,q/res).a;
-      vec2 ht=texture2D(HT,q/res).rg;
-      return o*ht.g*(1.-smoothstep(0.,tol,abs(ht.r*128.-h)));
+    uniform sampler2D SM,ST,M,NB; uniform vec2 res,cam; uniform float art,frame,jmode;
+    float soft(sampler2D T,vec2 px,float rot){
+      float sr=art*3., hs=0., n=0.;
+      for(int i=0;i<8;i++){
+        float a=float(i)*2.39996+rot, r=sqrt((float(i)+.5)/8.)*sr;
+        vec4 s=texture2D(T,(px+vec2(cos(a),sin(a))*r)/res);
+        if(s.r>.5){hs+=s.g;n+=1.;}
+      }
+      vec4 c0=texture2D(T,px/res);
+      if(c0.r>.5){hs+=c0.g;n+=1.;}
+      if(n<.5)return 0.;
+      float h=hs/n*127.5;            // altura media de lo que hace sombra, en píxeles de arte
+      float r=.6+h*art*.045;         // radio de la penumbra en píxeles de esta textura
+      float o=0.;
+      for(int i=0;i<12;i++){
+        float a=float(i)*2.39996+rot*1.7, rr=sqrt((float(i)+.5)/12.)*r;
+        o+=texture2D(T,(px+vec2(cos(a),sin(a))*rr)/res).r;
+      }
+      // lo muy alto (copas) tapa algo menos: la luz se cuela entre las hojas
+      return o/12.*(1.-.35*smoothstep(30.,90.,h));
     }
     void main(){
       vec2 px=uv*res;
-      float self=texture2D(M,uv).a;
-      // ruido por píxel que cambia cada frame: la acumulación temporal lo promedia. Fijo en
-      // pantalla, el mundo se desliza por debajo del patrón y las sombras titilan.
+      // ruido anclado al mundo para girar las muestras (no titila al mover la cámara)
       vec2 wpx=vec2(px.x*2.-cam.x,(res.y-px.y)*2.-cam.y)*.5;
       float j=jmode<.5?hash(floor(px)):jmode<1.5?hash(floor(px)+fract(frame*.61803)*97.):hash(floor(wpx));
-      vec2 ds=-normalize(moonDir);           // la sombra de la luna cae hacia abajo-derecha
-      vec2 perp=vec2(-ds.y,ds.x);
-      vec2 c=center*res; vec2 fromC=px-c; float dP=length(fromC);
-      vec2 dt=fromC/(dP+1e-4);
-      float Ht=150.;                         // altura de la antorcha sobre el suelo
-      float s=0.,tt=0.;
-      for(int i=0;i<24;i++){
-        float h=(float(i)+j)*4.+2.;
-        float tol=6.+h*.15;
-        // luna baja: sombra de 0,9 veces la altura, con penumbra que se abre con la altura
-        vec2 bm=px-ds*h*.9+perp*(j-.5)*h*.12;
-        s=max(s,hit(bm,h,tol)*(1.-h/140.));
-        // antorcha: cuanto más lejos del jugador, más larga la sombra (con tope)
-        float st=min(h*dP/(Ht+h),h*.9);
-        vec2 bt=px-dt*st;
-        float notPlayer=smoothstep(9.*art,13.*art,length(bt+vec2(0.,h)-c));
-        tt=max(tt,hit(bt,h,tol)*notPlayer*(1.-h/120.));
-      }
+      float rot=j*6.2831853;
+      // ¿hay un sprite encima? La capa de sprites lo sabe exacto; la máscara adivinada tomaba los
+      // cristales claros por un brillo y les dejaba caer encima la sombra del de detrás
+      float self=max(texture2D(M,uv).a,texture2D(NB,uv).a);
+      float s=soft(SM,px,rot), t=soft(ST,px,rot+1.3);
+      // el juego deja de pintar un árbol ~100 px antes de que su sombra salga por arriba (o por
+      // la izquierda): sin este fundido, la punta de la sombra aparecería de golpe en el borde
+      s*=smoothstep(0.,.09,1.-uv.y)*smoothstep(0.,.05,uv.x);
+      float ct=texture2D(SM,uv).b;
       // los oclusores casi no reciben sombra proyectada (su cara iluminada la da la luz de contorno)
-      gl_FragColor=vec4(1.-s*(1.-self*.8),1.-tt*(1.-self*.8),0.,1.);
+      gl_FragColor=vec4(1.-s*(1.-self*.8),1.-t*(1.-self*.8),ct*(1.-self),1.);
     }`;
 
   // 3) iluminación global 2D: rayos desde cada píxel que recogen la emisión que ven
@@ -432,7 +397,7 @@
 
   // 6) composición final a resolución completa
   const FS_COMP = HEAD + `
-    uniform sampler2D W,S,M,GI,B1,B2,B3,HT,EXPO;
+    uniform sampler2D W,S,M,GI,B1,B2,B3,NB,EXPO;
     uniform vec2 res,cam,moonDir,center; uniform float art,aspect,time,dbg,quality;
     uniform vec3 ambient,moon,torch,fogCol,lowTint,highTint,shadowHue;
     uniform float torchR,gi,bloom,shadowK,relief,exposure,vignette,sat,fog,shafts,motes,ao,rim;
@@ -585,6 +550,12 @@
       float hl=lum(texture2D(W,uv-vec2(o.x,0)).rgb), hr=lum(texture2D(W,uv+vec2(o.x,0)).rgb);
       float hd=lum(texture2D(W,uv-vec2(0,o.y)).rgb), hu=lum(texture2D(W,uv+vec2(0,o.y)).rgb);
       vec3 n=normalize(vec3((hl-hr)*relief*3.,(hd-hu)*relief*3.,1.));
+      // en los sprites manda su normal (capa de sprites): la luz les da volumen, no sólo brillo
+      vec4 nb=texture2D(NB,uv);
+      float onSpr=step(.5,nb.a);
+      vec2 sxy=nb.rg*2.-1.;
+      vec3 sn=vec3(sxy,sqrt(max(0.,1.-dot(sxy,sxy))));
+      n=normalize(mix(n,sn,onSpr*.85));
       float ndl=max(dot(n,normalize(vec3(moonDir,.9))),0.);
 
       vec2 vis=texture2D(S,uv).rg;
@@ -608,11 +579,15 @@
 
       // oclusión ambiental: el suelo se oscurece al pie de lo que tiene encima
       float aoF=1.-ao*smoothstep(.05,.55,texture2D(B1,uv).a)*(1.-occ);
+      // sombra de contacto: el suelo se oscurece justo al pie de cada objeto
+      aoF*=1.-.5*smoothstep(0.,.8,texture2D(S,uv).b);
 
       // luz de contorno: borde del sprite que mira a la antorcha / a la luna
       float ex=texture2D(M,uv+vec2(o.x,0)).a-texture2D(M,uv-vec2(o.x,0)).a;
       float ey=texture2D(M,uv+vec2(0,o.y)).a-texture2D(M,uv-vec2(0,o.y)).a;
-      vec2 edge=-vec2(ex,ey); float el=length(edge);
+      vec2 edge=-vec2(ex,ey);
+      edge=mix(edge,sxy*1.4,onSpr); // con normal de sprite, el borde que mira a la luz sale de ella
+      float el=length(edge);
       vec2 en=edge/(el+1e-4);
       float rimT=max(dot(en,normalize(-dT+1e-4)),0.)*att;
       float rimM=max(dot(en,moonDir),0.)*.35*moonVis;
@@ -715,7 +690,7 @@
       if(dbg>2.5&&dbg<3.5)col=m.rgb+b;
       if(dbg>3.5&&dbg<4.5)col=g;
       if(dbg>4.5&&dbg<5.5)col=vec3(dens)+scatter*dens;
-      if(dbg>5.5)col=vec3(texture2D(HT,uv).r*1.5,occ*.3,0.);
+      if(dbg>5.5)col=nb.a>.5?vec3(nb.rg,nb.b*2.):vec3(texture2D(S,uv).rgb*.5);
       gl_FragColor=vec4(col,1.);
     }`;
 
@@ -739,7 +714,7 @@
   let P;
   try {
     P = {
-      prep: compile(FS_PREP), height: compile(FS_HEIGHT), shadow: compile(FS_SHADOW), gi: compile(FS_GI), temporal: compile(FS_TEMPORAL), avg: compile(FS_AVG), pcol: compile(FS_PCOL),
+      prep: compile(FS_PREP), shadow: compile(FS_SHADOW), gi: compile(FS_GI), temporal: compile(FS_TEMPORAL), avg: compile(FS_AVG), pcol: compile(FS_PCOL),
       down: compile(FS_DOWN), blur: compile(FS_BLUR), comp: compile(FS_COMP)
     };
   } catch (e) { console.warn('[luz] shaders:', e); cv.remove(); return; }
@@ -807,7 +782,7 @@
     if (T) for (const r of Object.values(T)) { gl.deleteTexture(r.t); gl.deleteFramebuffer(r.f); }
     const d = n => [Math.ceil(w / n), Math.ceil(h / n)];
     T = {
-      prep: target(...d(2)), height: target(...d(2)), shadow: target(...d(2)), shadowb: target(...d(2)),
+      prep: target(...d(2)), shadow: target(...d(2)), shadowb: target(...d(2)),
       sHistA: target(...d(2)), sHistB: target(...d(2)),
       q: target(...d(4)), gi: target(...d(4)), histA: target(...d(4)), histB: target(...d(4)),
       giOut: target(...d(4)), giTmp: target(...d(4)),
@@ -917,12 +892,10 @@
     pass(P.prep, T.prep, [['W', texW], ['G', texG], ['FX', texFX], ['ATK', texATK]], u => { gl.uniform2f(u.o, artScale / w, artScale / h); gl.uniform1f(u.emitBoost, bio.emit);
       // sin escenario reconocido se deja emitir al suelo como antes (no se sabe qué hay)
       gl.uniform1f(u.groundEmit, bioNow >= 0 ? Math.min(1, bio.liqGlow * 1.2) : 1); });
-    pass(P.height, T.height, [['M', T.prep.t]], u => gl.uniform2f(u.res, T.prep.w, T.prep.h));
-    pass(P.shadow, T.shadow, [['M', T.prep.t], ['HT', T.height.t]], u => {
+    spriteUpload();
+    pass(P.shadow, T.shadow, [['M', T.prep.t], ['SM', texSM], ['ST', texST], ['NB', texNB]], u => {
       gl.uniform2f(u.res, T.prep.w, T.prep.h);
-      gl.uniform2f(u.moonDir, S.moonDir[0], S.moonDir[1]);
-      gl.uniform2f(u.center, center[0], center[1]);
-      gl.uniform1f(u.art, artScale / 2);
+      gl.uniform1f(u.art, artScale); // píxeles de media resolución por píxel de arte
       gl.uniform1f(u.frame, frame % 1000);
       gl.uniform1f(u.jmode, tune.jmode);
       gl.uniform2f(u.cam, camE, camF);
@@ -982,7 +955,7 @@
     });
 
     pass(P.comp, null, [['W', texW], ['S', T.shadow.t], ['M', T.prep.t], ['GI', T.giOut.t],
-      ['B1', T.e8.t], ['B2', T.e16.t], ['B3', T.e32.t], ['HT', T.height.t], ['G', texG], ['DECO', texDeco], ['EXPO', aOut.t]], u => {
+      ['B1', T.e8.t], ['B2', T.e16.t], ['B3', T.e32.t], ['NB', texNB], ['G', texG], ['DECO', texDeco], ['EXPO', aOut.t]], u => {
       gl.uniform1f(u.decoOn, decoOn ? decoFade * decoFade * (3 - 2 * decoFade) : 0);
       gl.uniform1f(u.grassRatio, grassRatio);
       gl.uniform2f(u.res, w, h);
@@ -1071,7 +1044,7 @@
   const C2 = CanvasRenderingContext2D.prototype;
   const _save = C2.save, _restore = C2.restore, _clear = C2.clearRect, _setT = C2.setTransform;
   let depth = 0, phase = 0; // 0 nada · 1 suelo · 2 entidades · 3 HUD
-  const stats = { ok: 0, p1: 0, p2: 0, p3: 0 };
+  const stats = { ok: 0, p1: 0, p2: 0, p3: 0, sprMs: 0, sprN: 0 }; // sprMs: ms por frame de la capa de sprites
 
   // Las fases se siguen siempre (las variantes funcionan también con la luz apagada);
   // las fotos, el borrado y el render sólo con la luz encendida.
@@ -1088,7 +1061,7 @@
         const m = this.getTransform();
         artScale = Math.abs(m.a) || artScale;
         camE = m.e; camF = m.f;
-        if (lit()) { try { snap(texG); fxBegin(); } catch (e) { fail(e); } }
+        if (lit()) { try { snap(texG); fxBegin(); sprBegin(); } catch (e) { fail(e); } }
         phase = 2;
       }
     }
@@ -1208,6 +1181,148 @@
     return o.apply(this, arguments);
   })(C2.fillRect);
 
+  // ---------- capa de sprites: sombras con su forma real y normales (G-buffer) ----------
+  // Cada sprite que el juego pinta sobre el suelo (Pokémon, árboles, rocas, hierba, objetos) se
+  // repite aquí, con su misma transformación, en tres capas:
+  //  · normales (rg: hacia dónde mira cada píxel; b: altura sobre el pie; a: hay sprite), a
+  //    resolución completa. La normal sale de inflar la silueta (bordes redondeados) y de su
+  //    propio sombreado pintado, como hacen SpriteIlluminator o Laigter con los sprites 2D.
+  //  · sombra de la luna y sombra de la antorcha, a media resolución: la silueta del sprite
+  //    aplastada e inclinada desde sus pies. Es una transformación afín (cada punto se desplaza
+  //    en la dirección de la sombra tanto como alto está), así que la sombra tiene la forma
+  //    exacta del sprite: las ramas del árbol seco, las orejas del Pokémon. En verde lleva la
+  //    altura de cada punto (el shader ensancha la penumbra con ella) y, en azul, una mancha de
+  //    contacto al pie.
+  // Antes forma y altura se adivinaban comparando la imagen final con el suelo: salían manchas.
+  const smCv = document.createElement('canvas'), sm = smCv.getContext('2d');
+  const stCv = document.createElement('canvas'), st = stCv.getContext('2d');
+  const nbCv = document.createElement('canvas'), nbx = nbCv.getContext('2d');
+  const texSM = tex(), texST = tex(), texNB = tex();
+  gl.bindTexture(gl.TEXTURE_2D, texNB); // normales sin interpolar: en el borde del sprite se mezclarían con la nada
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  const blobGrad = sm.createRadialGradient(0, 0, 0, 0, 0, 1);
+  blobGrad.addColorStop(0, 'rgb(0,0,170)'); blobGrad.addColorStop(.55, 'rgb(0,0,110)'); blobGrad.addColorStop(1, 'rgb(0,0,0)');
+  const sprInfo = new WeakMap(); // imagen → Map(recorte → datos del sprite, o null si está vacío)
+  let sprBudget = 0, sprOn = false, moonOx = .5, moonOy = .75, sprT = 0, sprCount = 0;
+
+  // Lee el sprite una sola vez: pie (fila opaca más baja), ancho del pie, silueta y normales.
+  function analyzeSprite(img, sx, sy, sw, sh) {
+    const c = document.createElement('canvas'); c.width = sw; c.height = sh;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    let px;
+    try { _draw.call(x, img, sx, sy, sw, sh, 0, 0, sw, sh); px = x.getImageData(0, 0, sw, sh).data; } catch (e) { return null; }
+    const n = sw * sh, A = new Uint8Array(n);
+    let top = sh, foot = -1;
+    for (let i = 0; i < n; i++) if (px[i * 4 + 3] > 127) { A[i] = 1; const y = (i / sw) | 0; if (y < top) top = y; if (y > foot) foot = y; }
+    if (foot < 0) return null;
+    let fl = sw, fr = -1;
+    for (let y = Math.max(top, foot - 2); y <= foot; y++) for (let k = 0; k < sw; k++) if (A[y * sw + k]) { fl = Math.min(fl, k); fr = Math.max(fr, k); }
+    // distancia al borde (chaflán), contando como fuera lo que queda más allá de la imagen
+    const D = new Float32Array(n);
+    const at = (k, y) => (k < 0 || y < 0 || k >= sw || y >= sh) ? 0 : D[y * sw + k];
+    for (let i = 0; i < n; i++) D[i] = A[i] ? 1e9 : 0;
+    for (let y = 0; y < sh; y++) for (let k = 0; k < sw; k++) { const i = y * sw + k; if (!A[i]) continue;
+      D[i] = Math.min(D[i], at(k - 1, y) + 1, at(k, y - 1) + 1, at(k - 1, y - 1) + 1.414, at(k + 1, y - 1) + 1.414); }
+    for (let y = sh - 1; y >= 0; y--) for (let k = sw - 1; k >= 0; k--) { const i = y * sw + k; if (!A[i]) continue;
+      D[i] = Math.min(D[i], at(k + 1, y) + 1, at(k, y + 1) + 1, at(k + 1, y + 1) + 1.414, at(k - 1, y + 1) + 1.414); }
+    // relieve: un bisel redondo de 4 píxeles desde el borde + un poco del sombreado pintado
+    const R = 4, Z = new Float32Array(n);
+    for (let i = 0; i < n; i++) if (A[i]) {
+      const t = Math.min(D[i], R) / R;
+      Z[i] = R * Math.sqrt(1 - (1 - t) * (1 - t)) + (.299 * px[i * 4] + .587 * px[i * 4 + 1] + .114 * px[i * 4 + 2]) / 255 * 1.2;
+    }
+    const z = (k, y) => (k < 0 || y < 0 || k >= sw || y >= sh) ? 0 : Z[y * sw + k];
+    const nrm = document.createElement('canvas'), sil = document.createElement('canvas');
+    nrm.width = sil.width = sw; nrm.height = sil.height = sh;
+    const ni = new ImageData(sw, sh), si = new ImageData(sw, sh), N = ni.data, Sd = si.data;
+    for (let y = 0; y < sh; y++) for (let k = 0; k < sw; k++) {
+      const i = y * sw + k; if (!A[i]) continue;
+      // normal del relieve, con la y hacia arriba (la del shader)
+      let nx = -(z(k + 1, y) - z(k - 1, y)) * .5, ny = (z(k, y + 1) - z(k, y - 1)) * .5;
+      const l = Math.hypot(nx, ny, 1); nx /= l; ny /= l;
+      const hgt = Math.min(255, (foot - y) * 2); // altura sobre el pie, en píxeles de arte ×2
+      N[i * 4] = (nx * .5 + .5) * 255; N[i * 4 + 1] = (ny * .5 + .5) * 255; N[i * 4 + 2] = hgt; N[i * 4 + 3] = 255;
+      Sd[i * 4] = 255; Sd[i * 4 + 1] = hgt; Sd[i * 4 + 3] = 255;
+    }
+    nrm.getContext('2d').putImageData(ni, 0, 0); sil.getContext('2d').putImageData(si, 0, 0);
+    return { foot, top, fl, fr, nrm, sil };
+  }
+  function spriteData(img, sx, sy, sw, sh) {
+    let byRect = sprInfo.get(img);
+    if (!byRect) { byRect = new Map(); sprInfo.set(img, byRect); }
+    const key = sx + ',' + sy + ',' + sw + ',' + sh;
+    const d = byRect.get(key);
+    if (d !== undefined) return d;
+    // como mucho unos pocos sprites nuevos por frame: al entrar en un escenario no hay tirón
+    if (sprBudget <= 0 || sw < 1 || sh < 1 || sw * sh > 200 * 200) return null;
+    sprBudget--;
+    const r = analyzeSprite(img, sx, sy, sw, sh);
+    byRect.set(key, r);
+    return r;
+  }
+  function sprBegin() {
+    const w = game.width, h = game.height, hw = w >> 1, hh = h >> 1;
+    for (const [c2, x2, W, H] of [[smCv, sm, hw, hh], [stCv, st, hw, hh], [nbCv, nbx, w, h]]) {
+      if (c2.width !== W || c2.height !== H) { c2.width = W; c2.height = H; }
+      x2.setTransform(1, 0, 0, 1, 0, 0); x2.globalAlpha = 1; x2.globalCompositeOperation = 'source-over';
+      x2.imageSmoothingEnabled = false;
+    }
+    sm.fillStyle = st.fillStyle = '#000'; sm.fillRect(0, 0, hw, hh); st.fillRect(0, 0, hw, hh);
+    nbx.clearRect(0, 0, w, h);
+    // en las sombras, cada canal se queda con el máximo (la sombra más alta, la mancha más oscura)
+    sm.globalCompositeOperation = st.globalCompositeOperation = 'lighten';
+    // dirección de la sombra de la luna en el canvas (y hacia abajo), 0,9 veces la altura. Con
+    // la luz casi de lado la silueta se aplastaría en una raya: los objetos tienen fondo.
+    const md = shown.moonDir, ml = Math.hypot(md[0], md[1]) || 1;
+    moonOx = -md[0] / ml * .9; moonOy = Math.max(.3, md[1] / ml * .9);
+    sprBudget = 24; sprOn = true;
+  }
+  function sprDraw(c, img, sx, sy, sw, sh, dx, dy, dw, dh) {
+    const t0 = performance.now();
+    try { sprDraw1(c, img, sx, sy, sw, sh, dx, dy, dw, dh); } finally { sprT += performance.now() - t0; sprCount++; }
+  }
+  function sprDraw1(c, img, sx, sy, sw, sh, dx, dy, dw, dh) {
+    const m = c.getTransform();
+    if (m.b || m.c || m.a <= 0 || m.d <= 0 || dw <= 0 || dh <= 0) return;
+    const d = spriteData(img, sx, sy, sw, sh); if (!d) return;
+    const ga = Math.min(1, c.globalAlpha), kx = dw / sw, ky = dh / sh;
+    if (ga > .9) { nbx.setTransform(m.a, 0, 0, m.d, m.e, m.f); _draw.call(nbx, d.nrm, 0, 0, sw, sh, dx, dy, dw, dh); }
+    const Fy = dy + (d.foot + 1) * ky, Fx = dx + (d.fl + d.fr + 1) * .5 * kx; // pie, en unidades del juego
+    const a = m.a * .5, dd = m.d * .5, e = m.e * .5, f = m.f * .5;          // a media resolución
+    // (x, y) → (x + ox·(Fy − y), Fy + oy·(Fy − y)): el pie se queda, lo alto se aleja
+    const cast = (x2, ox, oy, al) => {
+      x2.setTransform(a, 0, -a * ox, -dd * oy, a * ox * Fy + e, dd * (1 + oy) * Fy + f);
+      x2.globalAlpha = al;
+      _draw.call(x2, d.sil, 0, 0, sw, sh, dx, dy, dw, dh);
+    };
+    cast(sm, moonOx, moonOy, ga);
+    // antorcha: la sombra se aleja del jugador, más larga cuanto más lejos está (como antes:
+    // luz a 150 px de altura, con tope de 0,9 veces la altura). El jugador no se tapa a sí mismo.
+    const vx = m.a * Fx + m.e - game.width * .5, vy = m.d * Fy + m.f - game.height * .48;
+    const dP = Math.hypot(vx, vy), near = artScale * 14;
+    if (dP > near) {
+      const hmid = (d.foot - d.top) * ky * m.d * .25;
+      const k = Math.min(.9, dP * .5 / (150 + hmid));
+      cast(st, vx / dP * k, Math.max(Math.abs(vy / dP * k), .3 * k) * (vy < 0 ? -1 : 1), ga * Math.min(1, (dP - near) / (artScale * 6)));
+    }
+    // mancha de contacto al pie (lo que se apoya en el suelo lo oscurece justo debajo)
+    if (sw >= 6 && ga > .5) {
+      const rx = Math.max(1.5, (d.fr - d.fl + 1) * .5 * kx * 1.15), ry = rx * .38;
+      sm.setTransform(a * rx, 0, 0, dd * ry, a * Fx + e, dd * (Fy - ry * .2) + f);
+      sm.globalAlpha = 1; sm.fillStyle = blobGrad; sm.fillRect(-1, -1, 2, 2);
+    }
+  }
+  function spriteUpload() {
+    const t0 = performance.now();
+    for (const [t, c2] of [[texSM, smCv], [texST, stCv], [texNB, nbCv]]) {
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c2);
+    }
+    sprT += performance.now() - t0;
+    stats.sprMs = stats.sprMs * .9 + sprT * .1; stats.sprN = sprCount; sprT = 0; sprCount = 0;
+  }
+
   // ---------- variantes de árboles, árboles secos, cristales, rocas y hierba alta ----------
   // Las genera js/props.js con los mismos pintores del juego (sólo cambian las formas); aquí
   // se decide cuál toca a cada objeto según su posición en el mundo, para que siempre sea el
@@ -1262,8 +1377,8 @@
     // Ataques y efectos no proyectan sombra y emiten un poco de luz de su color: los sprites
     // translúcidos o en modo de mezcla (destellos, auras, impactos) y los que el juego dibuja
     // centrados en su propio origen tras girarlos (proyectiles: dx ≈ −ancho/2, dy ≈ −alto/2).
-    if (recording(this) && (this.globalAlpha < .9 || this.globalCompositeOperation !== 'source-over' ||
-        (arguments.length === 5 && Math.abs(dx + dw / 2) < 1.5 && Math.abs(dy + dh / 2) < 1.5))) {
+    const centred = arguments.length === 5 && Math.abs(dx + dw / 2) < 1.5 && Math.abs(dy + dh / 2) < 1.5;
+    if (recording(this) && (this.globalAlpha < .9 || this.globalCompositeOperation !== 'source-over' || centred)) {
       fxT(this.getTransform()); _draw.apply(fx, arguments);
       atk.globalAlpha = Math.min(1, this.globalAlpha); _draw.apply(atk, arguments);
     }
@@ -1279,8 +1394,20 @@
       const info = !m.b && !m.c && PS_PROPS.analyze(img);
       if (info) {
         const v = Math.floor(hash2(Math.round(dx), Math.round(dy)) * info.n);
-        return _draw.call(this, PS_PROPS.variant(img, info, v), dx, dy, dw, dh);
+        const vimg = PS_PROPS.variant(img, info, v);
+        if (sprOn && this === ctx) sprDraw(this, vimg, 0, 0, vimg.width, vimg.height, dx, dy, dw, dh);
+        return _draw.call(this, vimg, dx, dy, dw, dh);
       }
+    }
+    // capa de sprites: lo opaco que se apoya en el suelo (ni efectos, ni proyectiles, ni la grieta)
+    if (sprOn && this === ctx && phase === 2 && !centred && this.globalAlpha >= .5 && this.globalCompositeOperation === 'source-over' &&
+        (img instanceof HTMLCanvasElement || img instanceof HTMLImageElement) && !(img.width === 30 && img.height === 46)) {
+      try {
+        const n = arguments.length;
+        if (n >= 9) sprDraw(this, img, arguments[1], arguments[2], arguments[3], arguments[4], arguments[5], arguments[6], arguments[7], arguments[8]);
+        else if (n >= 5) sprDraw(this, img, 0, 0, img.width, img.height, dx, dy, dw, dh);
+        else sprDraw(this, img, 0, 0, img.width, img.height, dx, dy, img.width, img.height);
+      } catch (e) { fail(e); }
     }
     return _draw.apply(this, arguments);
   };
@@ -1299,7 +1426,7 @@
       finally {
         cv.style.visibility = ok ? 'visible' : 'hidden';
         if (!ok) texts.length = 0; // 3) textos de un frame a medias: fuera
-        phase = 0; depth = 0;
+        phase = 0; depth = 0; sprOn = false;
       }
     });
   };
@@ -1337,6 +1464,7 @@
     get deco() { return decoOn; }, set deco(v) { decoOn = !!v; }, get grassRatio() { return grassRatio; },
     get exposicion() { return +expoGain.toFixed(3); },
     get companero() { return partnerCol.map(v => Math.round(v * 255)); },
-    get bioma() { return bioNow >= 0 ? BIOMES[bioNow].id : null; }, BIOMES, PRESETS
+    get bioma() { return bioNow >= 0 ? BIOMES[bioNow].id : null; }, BIOMES, PRESETS,
+    capas: { luna: smCv, antorcha: stCv, normales: nbCv }
   };
 })();

@@ -77,8 +77,13 @@ On the extensions page, click **Remove** on the extension's card. You can then d
 
 ## What it does
 
-- **Shadows** from the moon and from the player's light, which takes on your partner Pokémon's
-  colour. Each object casts a shadow as tall as it is: a tree casts more than a tuft of grass.
+- **Shadows with the real shape of every object**, from the moon and from the player's light
+  (which takes on your partner Pokémon's colour). Each sprite is projected from its feet, so a
+  dead tree casts its branches and a Pokémon its ears. Shadows are sharp at the base and get
+  softer the higher the part that casts them, and everything gets a contact shadow where it
+  touches the ground.
+- **Volume on sprites:** every sprite gets a normal map generated from its silhouette and
+  shading, so light wraps around it instead of just brightening it.
 - **Global illumination:** fires, pumpkins, lava, crystals and attacks light up their
   surroundings in their own colour.
 - **Soft fog with light shafts**, floating particles and rim light on characters.
