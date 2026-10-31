@@ -1,78 +1,128 @@
-# PokéSurvivor · Luces y sombras
+# PokéSurvivor · Lights & Shadows
 
-Extensión de navegador que añade iluminación en tiempo real a
-[PokéSurvivor](https://pokesurvivor.com/) sin tocar el juego: sombras, luz que rebota, niebla,
-agua con reflejos y un ambiente propio para cada escenario. Funciona en Chrome, Edge, Brave y
-Opera, y solo se activa en pokesurvivor.com.
+A browser extension that adds real-time lighting to [PokéSurvivor](https://pokesurvivor.com/):
+shadows, bouncing light, fog, water reflections and a unique mood for every area. It doesn't
+change the game itself, and it only runs on pokesurvivor.com.
 
-| Original | Con la extensión |
+| Original | With the extension |
 | --- | --- |
-| ![Juego original](docs/huerto-antes.jpg) | ![Con luces y sombras](docs/huerto-despues.jpg) |
+| ![Original game](docs/huerto-antes.jpg) | ![With lights and shadows](docs/huerto-despues.jpg) |
 
-![Una grieta abierta con el vórtice](docs/grieta.jpg)
+## How to install
 
-## Qué hace
+You don't need a GitHub account or any technical knowledge. It takes about two minutes.
 
-- **Sombras** de la luna y de la luz del jugador, que se tiñe con el color de tu compañero.
-  Tienen la altura de cada objeto, así que un árbol proyecta más sombra que una mata de hierba.
-- **Iluminación global**: fuegos, calabazas, lava, cristales y ataques iluminan lo que tienen
-  alrededor con su color.
-- **Niebla suave con haces de luz**, partículas en el aire y luz de contorno en los personajes.
-- **Agua viva**: cáusticas, burbujas, brillos y reflejos sobre toda la superficie, sin pintar
-  nunca por encima del jugador.
-- **Un ambiente distinto en cada escenario y en cada grieta**, con una transición suave al
-  cambiar de zona.
-- **Grietas con un shader propio**: el suelo de alrededor se retuerce hacia el vórtice.
-- **Variantes de árboles, árboles secos, cristales, rocas y hierba**, pintadas con los mismos
-  algoritmos y la paleta de cada zona del juego, no con dibujos nuevos.
-- **Decoración del suelo**: flores, matas y piedrecitas que nunca salen en el agua.
-- **Exposición automática**, para que ni las zonas claras ni las oscuras queden lavadas.
+Works in **Chrome, Edge, Brave and Opera** on a computer (not on phones, and not in Firefox or
+Safari).
 
-## Instalar
+### 1. Download it
 
-1. Descarga el `.zip` de la [última versión](../../releases/latest) y descomprímelo, o clona
-   este repositorio.
-2. Abre `chrome://extensions` (en Edge, `edge://extensions`).
-3. Activa **Modo de desarrollador** (arriba a la derecha).
-4. Pulsa **Cargar descomprimida** y elige la carpeta (la que tiene `manifest.json`).
-5. Entra en https://pokesurvivor.com/ y juega.
+**[⬇ Click here to download `pokesurvivor-luces.zip`](https://github.com/PelayoNaredo/pokesurvivor-luces/releases/latest/download/pokesurvivor-luces.zip)**
 
-## Uso
+The file goes to your **Downloads** folder.
 
-- **Icono de la extensión**: elige el ambiente (noche, atardecer, día u original) y activa o
-  desactiva las variantes y la decoración. Los cambios se aplican al momento, sin recargar.
-- **Tecla L** durante la partida: pasa al siguiente ambiente (el menú se actualiza solo).
+### 2. Unzip it
 
-## Bueno saber
+- **Windows:** right-click the file → **Extract All…** → **Extract**.
+- **Mac:** double-click the file.
 
-- Si algo falla (un driver gráfico raro, pérdida del contexto WebGL), la extensión se apaga
-  sola y se ve el juego normal.
-- Respeta la opción del sistema «reducir movimiento»: sin relámpagos, sin aire que tiembla y
-  sin vórtice en las grietas.
-- La calidad baja sola si los FPS caen.
-- No envía nada a ningún sitio. Solo guarda los tres ajustes del menú en el almacenamiento del
-  navegador (si tienes la sincronización activada, el navegador los copia entre tus equipos).
+You now have a folder called `pokesurvivor-luces`. Leave it somewhere you won't delete it
+(for example, your Documents folder): the browser loads the extension from there every time.
 
-## Archivos
+### 3. Open the extensions page
 
-| Archivo | Para qué sirve |
+Copy this into the address bar and press Enter:
+
+- Chrome: `chrome://extensions`
+- Edge: `edge://extensions`
+- Brave: `brave://extensions`
+- Opera: `opera://extensions`
+
+### 4. Turn on Developer mode
+
+Find the **Developer mode** switch (top right in Chrome, on the left side in Edge) and turn it on.
+This only lets you install extensions from a folder on your computer; it doesn't change anything
+else.
+
+### 5. Load the folder
+
+Click **Load unpacked** and choose the `pokesurvivor-luces` folder from step 2. Pick the folder
+that contains `manifest.json`; if you see another `pokesurvivor-luces` folder inside, choose that
+inner one.
+
+The extension appears in the list with a little moon icon. Done!
+
+### 6. Play
+
+Go to **https://pokesurvivor.com/** and start a game. If the page was already open, reload it.
+
+> **Tip:** click the puzzle piece icon next to the address bar and pin the moon so you can
+> reach the menu in one click.
+
+## Using it
+
+- **Moon icon:** pick the mood (**Noche** = night, **Atardecer** = sunset, **Día** = day,
+  **Original** = no lighting) and turn tree/rock/grass variants and ground decoration on or off.
+  Changes apply instantly, no reload needed. (The menu is in Spanish.)
+- **L key** during a game: switch to the next mood.
+
+## Updating
+
+Download the zip again, unzip it over the old folder (replace the files), then on the extensions
+page click the reload arrow on the extension's card.
+
+## Uninstalling
+
+On the extensions page, click **Remove** on the extension's card. You can then delete the folder.
+
+## What it does
+
+- **Shadows** from the moon and from the player's light, which takes on your partner Pokémon's
+  colour. Each object casts a shadow as tall as it is: a tree casts more than a tuft of grass.
+- **Global illumination:** fires, pumpkins, lava, crystals and attacks light up their
+  surroundings in their own colour.
+- **Soft fog with light shafts**, floating particles and rim light on characters.
+- **Living water:** caustics, bubbles, glints, drifting clouds reflected on the whole surface,
+  and reflections of whatever stands on the water or by its shore.
+- **A different mood in every area and every rift**, with smooth transitions between them.
+- **Rifts get their own shader:** the ground around them twists into the vortex.
+- **Variants of trees, dead trees, crystals, rocks and grass**, drawn with the game's own
+  painting code and each area's palette, not with new artwork.
+- **Ground decoration:** flowers, tufts and pebbles that never show up in water.
+- **Auto exposure**, so neither bright nor dark areas look washed out.
+
+## Good to know
+
+- If something goes wrong (an unusual graphics driver, the WebGL context getting lost), the
+  extension switches itself off and you see the normal game.
+- It respects your system's "reduce motion" setting: no lightning, no heat shimmer and no
+  vortex in the rifts.
+- Quality lowers itself if the frame rate drops.
+- It doesn't send anything anywhere. It only stores the three menu settings in your browser
+  (if you have browser sync on, the browser copies them between your devices).
+- Chrome may show a notice about developer-mode extensions when it starts. That's normal for
+  anything installed this way; you can close it.
+
+## Files
+
+| File | Purpose |
 | --- | --- |
-| `manifest.json` | Declaración de la extensión (Manifest V3) |
-| `lighting.js` | La iluminación; se ejecuta en la página para engancharse al canvas del juego |
-| `props.js` | Variantes de árboles, rocas y hierba |
-| `bridge.js` | Pasa los ajustes del menú a la página |
-| `popup.html`, `popup.css`, `popup.js` | El menú |
-| `icons/`, `fonts/` | Iconos y la fuente pixel del juego |
+| `manifest.json` | Extension declaration (Manifest V3) |
+| `lighting.js` | The lighting; runs in the page to hook into the game's canvas |
+| `props.js` | Tree, rock and grass variants |
+| `bridge.js` | Passes the menu settings to the page |
+| `popup.html`, `popup.css`, `popup.js` | The menu |
+| `icons/`, `fonts/` | Icons and the game's pixel font |
 
-## Licencia y créditos
+## License and credits
 
-- **PokéSurvivor** es de [JPTER78](https://github.com/JPTER78/pokesurvivor). `props.js` adapta
-  los pintores de objetos de su código, que se publica bajo la
-  [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/).
-  Por eso esta extensión se distribuye con la misma licencia: puedes usarla, estudiarla y
-  modificarla, pero **no con fines comerciales**. Detalles y avisos en [LICENSE.md](LICENSE.md).
-- **Pixelify Sans** está bajo la SIL Open Font License ([fonts/OFL.txt](fonts/OFL.txt)).
-- Pokémon y sus nombres son marcas de Nintendo, Creatures Inc. y GAME FREAK inc.
+- **PokéSurvivor** is made by [JPTER78](https://github.com/JPTER78/pokesurvivor). `props.js`
+  adapts the object painters from its code, which is released under the
+  [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/)
+  license. That's why this extension uses the same license: you can use, study and modify it,
+  but **not for commercial purposes**. Details and notices in [LICENSE.md](LICENSE.md).
+- **Pixelify Sans** is under the SIL Open Font License ([fonts/OFL.txt](fonts/OFL.txt)).
+- Pokémon and its names are trademarks of Nintendo, Creatures Inc. and GAME FREAK inc.
 
-Proyecto de fan sin ánimo de lucro. No está afiliado ni respaldado por el autor de PokéSurvivor
-ni por los titulares de Pokémon.
+This is a non-profit fan project. It is not affiliated with or endorsed by the author of
+PokéSurvivor or by the Pokémon rights holders.
