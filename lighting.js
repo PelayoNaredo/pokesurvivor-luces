@@ -555,7 +555,8 @@
           vec2 q=uv+st*float(i);
           vec3 a=texture2D(G,q).rgb, b2=texture2D(G,q+st*.5).rgb;
           float wa=step(min(distance(a,liqA),distance(a,liqB)),.02), wb=step(min(distance(b2,liqA),distance(b2,liqB)),.02);
-          if(wa+wb<.5){s=float(i);break;}
+          // también para en un sprite que pisa el agua (jugador, Pokémon): se refleja bajo sus pies
+          if(wa+wb<.5||texture2D(M,q).a>.5){s=float(i);break;}
         }
         // ondas: el reflejo tiembla en horizontal, más lejos de la orilla
         float wob=sin(wp.y*.55+time*2.2)+.5*sin(wp.y*1.3-time*3.1+wp.x*.05);
@@ -564,7 +565,8 @@
           mirOn=(1.-smoothstep(6.,32.,s));
           float ro=texture2D(M,mirUv).a;
           vec3 rc=texture2D(W,mirUv).rgb;
-          alb=mix(alb,rc*mix(vec3(1.),liqFx,.35)*.8,ro*.5*mirOn*min(1.,bLiq.w)*liq);
+          // más oscuro y teñido del agua: claro sobre agua clara no se distinguía
+          alb=mix(alb,rc*mix(vec3(1.),liqFx,.45)*.55,ro*.7*mirOn*min(1.,bLiq.w)*liq);
         } else {
           // lejos de cualquier orilla: se refleja lo que hay un poco más arriba, muy tenue
           mirUv=uv+vec2(wob*o.x*1.5,24.*o.y); mirOn=.35;
@@ -639,8 +641,14 @@
         // toda la superficie refleja: brillo de luna y antorcha que corre con las ondas,
         // las luces cercanas (fuegos, calabazas, ataques) temblando, y un poco de cielo
         float sheen=smoothstep(.55,.95,noise(pa*vec2(.05,.16)+vec2(time*.15,time*.05)))*smoothstep(.3,.8,noise(pa*.03-time*.07));
-        vec3 sky=moon*moonVis*.12+torch*att*.25;
+        vec3 sky=moon*moonVis*.12+torch*att*.08; // poca antorcha: sumada al agua la volvía crema y tapaba los reflejos
         vec3 rl=(texture2D(B1,mirUv).rgb*.6+texture2D(B2,mirUv).rgb*.4)*mirOn;
+        // cielo reflejado: nubes que pasan despacio y se rompen con las ondas, para que el centro
+        // de un lago grande, lejos de toda orilla, también refleje algo (menos donde ya hay reflejo)
+        vec2 cp=wp+vec2(sin(wp.y*.55+time*2.2)*1.5,0.);
+        float cl=noise(cp*.006+vec2(time*.02,time*.008))*.65+noise(cp*.017-vec2(time*.03,0.))*.35;
+        float cloud=smoothstep(.42,.78,cl);
+        sky+=(moon*moonVis*.22+ambient*.14)*cloud*(1.-mirOn*.6)-ambient*.05*(1.-cloud);
         col+=liq*bLiq.w*(sheen*(moon*moonVis*.35+torch*att*.6)+sky+rl*1.2);
       }
       // escarcha / polvo de cristal: destellos sueltos en el suelo que se encienden y apagan
