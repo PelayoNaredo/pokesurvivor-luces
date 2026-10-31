@@ -25,6 +25,20 @@
  * Sólo con window.PS_LUZ_DEBUG = true antes de cargar: window.PS_LUZ para pruebas
  * (PS_LUZ.debug = 1 oclusores · 2 sombras · 3 emisión · 4 luz global · 5 niebla · 6 alturas).
  */
+// Los sprites del juego son canvas pequeños que se pintan una vez y se dibujan muchas. La capa de
+// sprites lee sus píxeles una vez para sacar silueta y normales; si el canvas vive en la GPU, cada
+// lectura la hace esperar (~15 ms: tirones al ver cosas nuevas). Pedidos con willReadFrequently se
+// guardan en memoria normal y leerlos es inmediato; al juego no le cuesta nada (no se repintan).
+// Va antes de esperar a #game: el juego crea estos canvas desde el principio.
+if (!window.__psLuzCtx) {
+  window.__psLuzCtx = true;
+  const getCtx = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (type, opts) {
+    if (type === '2d' && this.id !== 'game' && this.width * this.height <= 128 * 128 && !(opts && 'willReadFrequently' in opts))
+      opts = Object.assign({}, opts, { willReadFrequently: true });
+    return getCtx.call(this, type, opts);
+  };
+}
 (function start() {
   'use strict';
   if (window.__psLuzActivo) return; // ya cargado (p. ej. el script de la página y la extensión)
@@ -157,7 +171,9 @@
       tint: [1, 1, 1], fogCol: [.08, .08, .1], fogMul: 1, moonMul: 1, canopy: 0, lightning: 0, flicker: 0, emit: 1
     }, LIQ_FX[ltype], MOTES[motes], extra));
   }
-  const NEUTRAL = { tint: [1, 1, 1], fogCol: [0, 0, 0], fogMul: 1, moonMul: 1, canopy: 0, lightning: 0, flicker: 0, emit: 1,
+  // nubes que pasan por delante de la luna: al aire libre sí; en la cueva y en las grietas no hay cielo
+  for (const b of BIOMES) if (b.clouds === undefined) b.clouds = b.id.startsWith('grieta-') || b.id === 'cueva-cristal' ? 0 : .32;
+  const NEUTRAL = { clouds: .2, tint: [1, 1, 1], fogCol: [0, 0, 0], fogMul: 1, moonMul: 1, canopy: 0, lightning: 0, flicker: 0, emit: 1,
     liqGlow: 0, caustic: 0, bubbles: 0, spec: 0, moteCol: [.05, .08, .04], moteDen: .56, moteRise: .15, moteBlink: 0, moteSize: 1,
     heat: 0, glitter: 0, vignetteMul: 1, flashCol: [.55, .6, .85], gLow: [1, 1, 1], gHigh: [1, 1, 1] };
   // Firma de cada sitio: gradación (tinte de sombras / de luces), aire que tiembla, escarcha,
@@ -210,8 +226,9 @@
   cv.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;pointer-events:none;display:block';
   game.parentNode.insertBefore(cv, game);
   const gl = cv.getContext('webgl', { alpha: false, antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: false });
-  // la composición final lee 11 texturas a la vez; WebGL sólo garantiza 8 (móviles muy viejos)
-  if (!gl || gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) < 11) { cv.remove(); return; }
+  // la composición final lee 14 texturas a la vez y usa unos 60 vectores de uniformes; WebGL sólo
+  // garantiza 8 y 16 (móviles muy viejos): sin eso, el juego tal cual
+  if (!gl || gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) < 14 || gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) < 64) { cv.remove(); return; }
   // Si el navegador pierde el contexto (móvil en segundo plano, poca memoria) ya no se puede
   // pintar encima: se deja de tocar el canvas del juego y se ve el original, en vez de un
   // mundo en negro con sólo el HUD.
@@ -281,7 +298,7 @@
   // sombras suaves de los motores (PCSS): primero se mira a qué altura está lo que tapa la
   // luz y, cuanto más alto, más ancha la penumbra. Nítida al pie, difusa en la copa.
   const FS_SHADOW = HEAD + `
-    uniform sampler2D SM,ST,M,NB; uniform vec2 res,cam; uniform float art,frame,jmode;
+    uniform sampler2D SM,ST,M,NB; uniform vec2 res,cam; uniform float art,frame,jmode,time,canopy,clouds;
     float soft(sampler2D T,vec2 px,float rot){
       float sr=art*3., hs=0., n=0.;
       for(int i=0;i<8;i++){
@@ -317,55 +334,105 @@
       s*=smoothstep(0.,.09,1.-uv.y)*smoothstep(0.,.05,uv.x);
       float ct=texture2D(SM,uv).b;
       // los oclusores casi no reciben sombra proyectada (su cara iluminada la da la luz de contorno)
-      gl_FragColor=vec4(1.-s*(1.-self*.8),1.-t*(1.-self*.8),ct*(1.-self),1.);
+      // copas de los árboles (la luz de luna llega a manchas que se mecen con el viento) y nubes
+      // (sombras enormes y lentas que cruzan el suelo): en alfa, aquí a media resolución porque
+      // cambian muy despacio de un sitio a otro (eran 3 ruidos por píxel en la composición)
+      vec2 wp=(vec2(px.x*2.,(res.y-px.y)*2.)-cam)/art;
+      float mv=mix(1.,.55+.45*smoothstep(.3,.7,noise(wp*.012+vec2(time*.015,time*.01))),canopy);
+      if(clouds>0.){
+        float cs=noise(wp*.0016+vec2(time*.012,time*.005))*.7+noise(wp*.0041+vec2(time*.02,-time*.007))*.3;
+        mv*=1.-clouds*smoothstep(.42,.72,cs);
+      }
+      gl_FragColor=vec4(1.-s*(1.-self*.8),1.-t*(1.-self*.8),ct*(1.-self),mv);
     }`;
 
-  // 3) iluminación global 2D: rayos desde cada píxel que recogen la emisión que ven
-  const FS_GI = HEAD + `
-    uniform sampler2D S; uniform vec2 res; uniform float frame,rays;
+  // 3) luz rebotada (iluminación global 2D) con Radiance Cascades (Sannikov, 2024).
+  // Sondas repartidas por el mundo; cada sonda mira la luz que le llega desde todas las
+  // direcciones, pero por tramos: la cascada 0 mira cerca, con pocas direcciones y muchas sondas;
+  // cada cascada siguiente mira 4 veces más lejos, con 4 veces más direcciones y la mitad de sondas
+  // por eje (la luz lejana cambia despacio de un sitio a otro pero necesita más resolución en
+  // ángulo). Se calculan de la más lejana a la más cercana y cada una añade, por donde su tramo no
+  // está tapado, lo que ve la siguiente. Sale sin ruido, sin acumular entre frames y con sombras
+  // suaves de cada fuente. Antes: 16 rayos al azar por píxel y acumulación temporal (ruido, estelas).
+  // Cada cascada ocupa una textura del mismo tamaño: bloques de direcciones (2^(i+1) por eje),
+  // cada bloque con todas las sondas de esa dirección.
+  // Los valores se guardan comprimidos (x/(x+2)): una dirección puede pasar mucho de 1.
+  const FS_RC = HEAD + `
+    uniform sampler2D SC,UP; uniform vec2 qres,p0,off; uniform float ci,last,L0,steps,texel;
+    vec3 enc(vec3 x){return x/(x+2.);} vec3 dec(vec3 y){y=min(y,vec3(.996));return 2.*y/(1.-y);}
     void main(){
-      vec2 px=uv*res;
-      float self=texture2D(S,uv).a;
-      float rnd=hash(px+fract(frame*.61803)*97.);
-      vec3 acc=vec3(0.);
-      for(int r=0;r<16;r++){
-        if(float(r)>=rays)break;
-        float a=(float(r)+rnd)/rays*6.2831853;
-        vec2 dir=vec2(cos(a),sin(a));
-        // cada rayo muestrea en un punto al azar de cada tramo: sin esto salen anillos concéntricos
-        float jr=hash(px*1.31+float(r)*3.7+frame);
-        float T=1., st=1., t=.5;
-        for(int i=0;i<18;i++){
-          vec2 p=px+dir*(t+st*jr);
-          if(p.x<0.||p.y<0.||p.x>res.x||p.y>res.y)break;
-          vec4 s=texture2D(S,p/res);
-          acc+=s.rgb*T*st;
-          // dentro del propio sprite no se tapa a sí mismo: así se ilumina la cara que mira a la luz
-          float o=s.a*(t<3.?1.-self:1.);
-          T*=1.-o*.92;
-          if(T<.03)break;
-          t+=st; st*=1.24;
-        }
+      vec2 tex=floor(gl_FragCoord.xy);
+      float sc=exp2(ci), B=2.*sc;          // direcciones por eje (B×B en total)
+      vec2 P=p0/sc;                        // sondas por eje en esta cascada
+      vec2 blk=floor(tex/P), pr=tex-blk*P;
+      float D=B*B, d=blk.x+blk.y*B;
+      float sp=2.*sc;                      // separación entre sondas, en texels de 1/4
+      vec2 c=(pr+.5)*sp+off;               // centro de la sonda
+      float a0=L0*(exp2(2.*ci)-1.)/3., len=L0*exp2(2.*ci); // tramo [a0, a0+len]
+      float ang=(d+.5)/D*6.2831853;
+      vec2 dir=vec2(cos(ang),sin(ang));
+      // (las sondas del margen, fuera de pantalla, lanzan sus rayos desde el borde: si no, valían 0
+      // y al interpolar oscurecían una franja a lo largo de los bordes)
+      vec2 cc=clamp(c,vec2(.5),qres-.5);
+      float self=texture2D(SC,cc/qres).a;
+      vec3 rad=vec3(0.); float T=1.;
+      float stp=len/steps;
+      for(int k=0;k<16;k++){
+        if(float(k)>=steps)break;
+        float t=a0+stp*(float(k)+.5);
+        vec2 q=(cc+dir*t)/qres;
+        if(q.x<0.||q.y<0.||q.x>1.||q.y>1.)continue; // fuera de pantalla no se sabe qué hay: no suma ni tapa
+        vec4 e=texture2D(SC,q);
+        // una sonda dentro de un sprite no se tapa a sí misma: así le llega luz a su cara iluminada
+        float o=e.a*(t<3.?1.-self:1.);
+        rad+=e.rgb*T*stp;
+        T*=exp(-o*2.5*stp/texel); // (alfa = cuánto del texel tapa: se mide en texels atravesados)
       }
-      gl_FragColor=vec4(acc/max(rays,1.)*.55,1.);
+      if(last<.5&&T>.002){
+        // lo que ve la cascada siguiente en las 4 direcciones en que se divide esta, en este sitio
+        vec2 Pu=P*.5; float Bu=B*2.;
+        vec2 g=clamp((c-off)/(sp*2.)-.5,vec2(0.),Pu-1.);
+        vec3 up=vec3(0.);
+        for(int k=0;k<4;k++){
+          float du=d*4.+float(k);
+          vec2 bu=vec2(mod(du,Bu),floor(du/Bu));
+          up+=dec(texture2D(UP,(bu*Pu+g+.5)/(Pu*Bu)).rgb);
+        }
+        rad+=T*up*.25;
+      }
+      gl_FragColor=vec4(enc(rad),1.);
+    }`;
+  // luz que llega a cada sonda de la cascada 0 (media de sus 4 direcciones)
+  // y, de paso, el parpadeo de vela de cada zona (cada una a su ritmo). Se funde entre campos de
+  // ruido fijos: un ruido que se desplaza con el tiempo se ve como ráfagas de viento barriendo el suelo.
+  const FS_RCOUT = HEAD + `uniform sampler2D C0; uniform vec2 p0,off,cam; uniform float k,art,hgt,time,flick;
+    vec3 dec(vec3 y){y=min(y,vec3(.996));return 2.*y/(1.-y);}
+    void main(){
+      vec2 pr=floor(gl_FragCoord.xy); vec3 s=vec3(0.);
+      for(int i=0;i<4;i++){ vec2 b=vec2(mod(float(i),2.),floor(float(i)/2.)); s+=dec(texture2D(C0,(b*p0+pr+.5)/(2.*p0)).rgb); }
+      vec2 c=((pr+.5)*2.+off)*4.;                         // la sonda, en píxeles de pantalla (y de GL)
+      vec2 wp=(vec2(c.x,hgt-c.y)-cam)/art;
+      float ft=time*5., f0=floor(ft), fk=smoothstep(0.,1.,fract(ft));
+      float fn=mix(noise(wp*.008+f0*17.31),noise(wp*.008+(f0+1.)*17.31),fk);
+      gl_FragColor=vec4(s*.25*k*(1.+flick*(fn-.5)*.35),1.);
     }`;
 
   // 4) acumulación temporal con reproyección por el movimiento de la cámara
   const FS_TEMPORAL = HEAD + `
     uniform sampler2D C,H; uniform vec2 shift,texel; uniform float blend,clampK;
     void main(){
-      vec3 c=texture2D(C,uv).rgb;
+      vec4 c=texture2D(C,uv);
       vec2 p=uv+shift;
-      vec3 h=texture2D(H,p).rgb;
+      vec4 h=texture2D(H,p);
       // recorte del historial al rango de los vecinos actuales: sin estelas detrás de lo que se mueve
       if(clampK>0.){
-        vec3 a=texture2D(C,uv+vec2(texel.x,0)).rgb,b=texture2D(C,uv-vec2(texel.x,0)).rgb;
-        vec3 d=texture2D(C,uv+vec2(0,texel.y)).rgb,e=texture2D(C,uv-vec2(0,texel.y)).rgb;
-        vec3 lo=min(c,min(min(a,b),min(d,e)))-clampK, hi=max(c,max(max(a,b),max(d,e)))+clampK;
+        vec4 a=texture2D(C,uv+vec2(texel.x,0)),b=texture2D(C,uv-vec2(texel.x,0));
+        vec4 d=texture2D(C,uv+vec2(0,texel.y)),e=texture2D(C,uv-vec2(0,texel.y));
+        vec4 lo=min(c,min(min(a,b),min(d,e)))-clampK, hi=max(c,max(max(a,b),max(d,e)))+clampK;
         h=clamp(h,lo,hi);
       }
       float k=(p.x<0.||p.y<0.||p.x>1.||p.y>1.)?1.:blend;
-      gl_FragColor=vec4(mix(h,c,k),1.);
+      gl_FragColor=mix(h,c,k);
     }`;
 
   // 5) reducción + desenfoque separable (rgb y alfa)
@@ -386,29 +453,38 @@
         s+=c*w; n+=w;}
       gl_FragColor=vec4(n>.01?s/n:vec3(1.),clamp(n,0.,1.));}`;
 
-  // 4d) escenario y verde de la hierba, contados en la GPU sobre la foto del suelo (64×36 muestras).
+  // 4d) escenario y verde de la hierba, contados en la GPU sobre la foto del suelo (48×27 muestras).
   // x < nº de escenarios: fracción de muestras con el suelo exacto de cada uno; después, histograma
   // del verde/rojo de lo verde (160 cubos de 0,01 desde 0,8). Antes se leían en la CPU los píxeles
   // de cada trozo de suelo nuevo, y cada lectura frenaba la GPU: tirones al andar por terreno nuevo.
   const NBIO = BIOMES.length;
   const FS_FLOOR = HEAD + `uniform sampler2D G,FC; uniform vec2 res;
-    vec3 at(int i,int j){ vec2 q=(vec2(float(i),float(j))+.5)/vec2(64.,36.); return texture2D(G,(floor(q*res)+.5)/res).rgb; }
+    vec3 at(int i,int j){ vec2 q=(vec2(float(i),float(j))+.5)/vec2(48.,27.); return texture2D(G,(floor(q*res)+.5)/res).rgb; }
+    // ¿es este color uno de los suelos del escenario k?
+    float isFloor(vec3 g,float k){
+      vec3 f0=texture2D(FC,vec2((k*3.+.5)/${NBIO * 3}.,.5)).rgb, f1=texture2D(FC,vec2((k*3.+1.5)/${NBIO * 3}.,.5)).rgb, f2=texture2D(FC,vec2((k*3.+2.5)/${NBIO * 3}.,.5)).rgb;
+      return step(min(min(distance(g,f0),distance(g,f1)),distance(g,f2)),.003);
+    }
     void main(){
       float x=floor(gl_FragCoord.x), c=0.;
       if(x<${NBIO}.){
-        vec3 f0=texture2D(FC,vec2((x*3.+.5)/${NBIO * 3}.,.5)).rgb, f1=texture2D(FC,vec2((x*3.+1.5)/${NBIO * 3}.,.5)).rgb, f2=texture2D(FC,vec2((x*3.+2.5)/${NBIO * 3}.,.5)).rgb;
-        for(int j=0;j<36;j++)for(int i=0;i<64;i++){
+        // Algunos escenarios comparten un tono de suelo (el bosque y la grieta de hierba): cada
+        // muestra cuenta sólo para el primero de la lista que coincide. Contada para los dos, el
+        // bosque parecía estar siempre cambiando de escenario y la decoración no llegaba a salir.
+        for(int j=0;j<27;j++)for(int i=0;i<48;i++){
           vec3 g=at(i,j);
-          c+=step(min(min(distance(g,f0),distance(g,f1)),distance(g,f2)),.005);
+          float m=isFloor(g,x);
+          if(m>.5) for(int k=0;k<${NBIO};k++){ if(float(k)>=x)break; if(isFloor(g,float(k))>.5){m=0.;break;} }
+          c+=m;
         }
       } else {
         float bin=x-${NBIO}.;
-        for(int j=0;j<36;j++)for(int i=0;i<64;i++){
+        for(int j=0;j<27;j++)for(int i=0;i<48;i++){
           vec3 g=at(i,j);
           if(g.g>g.r&&g.g>g.b&&g.r>.032) c+=step(abs(floor((g.g/g.r-.8)*100.+.5)-bin),.1);
         }
       }
-      float v=c/2304.;
+      float v=c/1296.;
       gl_FragColor=vec4(floor(v*255.)/255.,fract(v*255.),0.,1.);
     }`;
 
@@ -420,10 +496,99 @@
       a+=(texture2D(T,uv+dir*3.231)+texture2D(T,uv-dir*3.231))*.070;
       gl_FragColor=a;}`;
 
+  // 5b) niebla volumétrica y haces de luz, a 1/4 de resolución: son suaves de por sí y, hechos
+  // en cada píxel de la composición (ruido de 4 capas + 20 lecturas por píxel), eran lo más caro
+  // de toda la luz. Sale la luz que dispersa la niebla (rgb, ya multiplicada) y su densidad (a).
+  const FS_VOL = HEAD + `
+    uniform sampler2D S,GI,EXPO; uniform vec2 res,cam,moonDir,center;
+    uniform float art,aspect,time,quality,fog,shafts,gi,torchR; uniform vec4 giST;
+    uniform vec4 lp[16]; uniform vec3 lc[16]; uniform float nLights;
+    uniform vec3 fogCol,torch,moon;
+    float fbm(vec2 p){float v=0.,a=.5;for(int i=0;i<4;i++){v+=a*noise(p);p=p*2.03+17.1;a*=.5;}return v;}
+    float torchAtt(vec2 q){vec2 d=(q-center)*vec2(aspect,1.);float r=length(d)/torchR;return 1./(1.+r*r*4.)*(1.-smoothstep(.15,1.6,r));}
+    void main(){
+      vec2 wp=(vec2(uv.x,1.-uv.y)*res-cam)/art;
+      float bk=smoothstep(.32,.62,texture2D(EXPO,vec2(.5)).r);
+      vec3 g=texture2D(GI,uv*giST.xy+giST.zw).rgb*gi; g/=1.+lum(g)*1.4;
+      // niebla anclada al mundo (se mueve con el viento, no con la cámara)
+      float dens=fbm(wp*.014+vec2(time*.05,time*.018));
+      dens=smoothstep(.3,1.,dens)*fog*.55*(1.-.65*bk); // rampa ancha: bordes difusos, sin manchas
+      // haces: de este punto hacia la antorcha y hacia la luna, mirando qué parte está a la sombra
+      float sh=0.,sm=0.;
+      vec2 vis=texture2D(S,uv).rg;
+      if(quality>.5){
+        float j=hash(uv*res+fract(time)*31.);
+        for(int i=0;i<10;i++){float t=(float(i)+j)/10.;
+          vec2 q=mix(uv,center,t*.9); sh+=texture2D(S,q).g*torchAtt(q);
+          sm+=texture2D(S,uv+vec2(moonDir.x/aspect,moonDir.y)*t*.08).r;}
+        sh/=10.; sm/=10.;
+      }else{sh=vis.g*torchAtt(uv);sm=vis.r;}
+      // cada luz puntual (fuegos, proyectiles) enciende la niebla a su alrededor: un halo
+      vec3 halo=vec3(0.);
+      for(int i=0;i<16;i++){
+        if(float(i)>=nLights)break;
+        vec2 dd=(lp[i].xy-uv)*vec2(aspect,1.); float r=lp[i].z*.7;
+        halo+=lc[i]*lp[i].w/(1.+dot(dd,dd)/(r*r)*3.);
+      }
+      vec3 scatter=fogCol+torch*sh*shafts*.8+moon*sm*.25*shafts+g*.6+halo*1.4;
+      gl_FragColor=vec4(scatter*dens,dens);
+    }`;
+
+  // 5c) decoración por celdas: el terreno de cada celda se comprueba aquí una sola vez (15 lecturas
+  // del suelo); antes se hacía en cada píxel de la celda y era lo más caro de la composición.
+  // Sale el color del suelo en la celda (rgb) y si lleva adorno: 1 hierba, .5 tierra, 0 nada.
+  const FS_DECOCELL = HEAD + `
+    uniform sampler2D G; uniform vec2 res,cam,cell0; uniform float art,grassRatio;
+    float terrain(vec3 c){
+      float grass=step(c.b*1.1,c.g)*step(c.r*1.02,c.g)*step(.08,c.g)*step(c.g,c.r*grassRatio*1.12);
+      float dirt=step(c.g,c.r)*step(c.b,c.g)*step(.05,c.r-c.b)*step(.08,c.r)*step(c.r,.55)*step((c.r-c.b)/c.r,.55);
+      return grass>.5?2.:dirt>.5?1.:0.;
+    }
+    void main(){
+      vec2 cell=cell0+floor(gl_FragCoord.xy);
+      float h1=hash(cell+.31),h2=hash(cell+7.7),h3=hash(cell+3.3);
+      vec2 org=cell*14.+floor(vec2(h2,h3)*6.);
+      // el terreno se mira en el centro y en 4 puntos alrededor: todos tienen que coincidir,
+      // para que no salga nada en la orilla de un pantano o de una pared
+      vec2 cs=(org+4.)*2.*art+cam;
+      vec2 cuv=vec2(cs.x/res.x,1.-cs.y/res.y), o=vec2(5.*2.*art)/res;
+      vec3 gr=texture2D(G,cuv).rgb;
+      float t0=terrain(gr);
+      float same=step(abs(terrain(texture2D(G,cuv+vec2(o.x,0)).rgb)-t0),.5)*step(abs(terrain(texture2D(G,cuv-vec2(o.x,0)).rgb)-t0),.5)
+                *step(abs(terrain(texture2D(G,cuv+vec2(0,o.y)).rgb)-t0),.5)*step(abs(terrain(texture2D(G,cuv-vec2(0,o.y)).rgb)-t0),.5);
+      // El pantano tiene píxeles sueltos casi iguales a la hierba, pero la mitad de sus píxeles
+      // son de un verde más saturado. Si cualquiera de otras 9 muestras de la zona es de ese
+      // verde, no se pone nada (simulado con los colores reales del Huerto: 0,005 % de fallos).
+      for(int yy=-1;yy<=1;yy++)for(int xx=-1;xx<=1;xx++){
+        vec3 c=texture2D(G,cuv+vec2(float(xx),float(yy))*o*.7).rgb;
+        same*=1.-step(c.b*1.1,c.g)*step(c.r*grassRatio*1.12,c.g);
+      }
+      float grass=step(1.5,t0)*same, dirt=step(.5,t0)*step(t0,1.5)*same;
+      // (fuera de pantalla no se sabe: nada)
+      float inside=step(0.,cuv.x)*step(cuv.x,1.)*step(0.,cuv.y)*step(cuv.y,1.);
+      float on=step(h1,grass*.5+dirt*.3)*inside*max(grass,dirt);
+      gl_FragColor=vec4(gr,on*(grass>.5?1.:.5));
+    }`;
+
+  // 5d) agua y líquidos del escenario: máscara a media resolución (eran 5 lecturas por píxel)
+  // Sólo coincidencias casi exactas (la hierba del Huerto está a 0,04 del pantano hondo) y
+  // en al menos 2 de 5 muestras: el agua tiene espuma y motas de otros colores.
+  const FS_LIQ = HEAD + `uniform sampler2D G; uniform vec2 o,full; uniform vec3 liqA,liqB;
+    void main(){
+      vec2 c=(floor(uv*full)+.5)/full; // en el centro de un píxel: el color exacto, sin mezclar
+      float nl=0.;
+      for(int i=0;i<5;i++){
+        vec2 off=i==0?vec2(0.):i==1?vec2(2.,0.):i==2?vec2(-2.,0.):i==3?vec2(0.,2.):vec2(0.,-2.);
+        vec3 gs=texture2D(G,c+off*o).rgb;
+        nl+=1.-smoothstep(.008,.02,min(distance(gs,liqA),distance(gs,liqB)));
+      }
+      gl_FragColor=vec4(smoothstep(1.5,2.5,nl),0.,0.,1.);
+    }`;
+
   // 6) composición final a resolución completa
   const FS_COMP = HEAD + `
-    uniform sampler2D W,S,M,GI,B1,B2,B3,NB,EXPO;
-    uniform vec2 res,cam,moonDir,center; uniform float art,aspect,time,dbg,quality;
+    uniform sampler2D W,S,M,GI,B1,B2,B3,NB,EXPO,VOL,LQ;
+    uniform vec2 res,cam,moonDir,center; uniform float art,aspect,time,dbg,quality; uniform vec4 giST; uniform float pixK,bandK,clouds;
     uniform vec3 ambient,moon,torch,fogCol,lowTint,highTint,shadowHue;
     uniform float torchR,gi,bloom,shadowK,relief,exposure,vignette,sat,fog,shafts,motes,ao,rim;
     // luces puntuales (capa de sprites): xy en pantalla, radio (en alturas de pantalla), fuerza; y su color
@@ -443,30 +608,21 @@
       float dirt=step(c.g,c.r)*step(c.b,c.g)*step(.05,c.r-c.b)*step(.08,c.r)*step(c.r,.55)*step((c.r-c.b)/c.r,.55);
       return grass>.5?2.:dirt>.5?1.:0.;
     }
+    // (qué adorno lleva cada celda y el color del suelo en ella lo decide FS_DECOCELL)
+    uniform sampler2D DC; uniform vec2 cell0;
     vec4 deco(vec2 ap){
       if(decoOn<.002||quality<.5)return vec4(0.); // en la calidad más baja, sin adornos
       vec2 cell=floor(ap/14.);
-      float h1=hash(cell+.31),h2=hash(cell+7.7),h3=hash(cell+3.3),h4=hash(cell+11.1),h5=hash(cell+5.9);
+      vec2 ci=cell-cell0;
+      if(ci.x<0.||ci.y<0.||ci.x>127.||ci.y>127.)return vec4(0.);
+      vec4 dcell=texture2D(DC,(ci+.5)/128.);
+      if(dcell.a<.25)return vec4(0.);
+      float h2=hash(cell+7.7),h3=hash(cell+3.3),h4=hash(cell+11.1),h5=hash(cell+5.9);
       vec2 org=cell*14.+floor(vec2(h2,h3)*6.);
       vec2 lp=floor(ap)-org;
       if(lp.x<0.||lp.y<0.||lp.x>7.||lp.y>7.)return vec4(0.);
-      // el terreno se mira en el centro y en 4 puntos alrededor: todos tienen que coincidir,
-      // para que no salga nada en la orilla de un pantano o de una pared
-      vec2 cs=(org+4.)*2.*art+cam;
-      vec2 cuv=vec2(cs.x/res.x,1.-cs.y/res.y), o=vec2(5.*2.*art)/res;
-      vec3 gr=texture2D(G,cuv).rgb;
-      float t0=terrain(gr);
-      float same=step(abs(terrain(texture2D(G,cuv).rgb)-t0),.5)*step(abs(terrain(texture2D(G,cuv+vec2(o.x,0)).rgb)-t0),.5)*step(abs(terrain(texture2D(G,cuv-vec2(o.x,0)).rgb)-t0),.5)
-                *step(abs(terrain(texture2D(G,cuv+vec2(0,o.y)).rgb)-t0),.5)*step(abs(terrain(texture2D(G,cuv-vec2(0,o.y)).rgb)-t0),.5);
-      // El pantano tiene píxeles sueltos casi iguales a la hierba, pero la mitad de sus píxeles
-      // son de un verde más saturado. Si cualquiera de otras 9 muestras de la zona es de ese
-      // verde, no se pone nada (simulado con los colores reales del Huerto: 0,005 % de fallos).
-      for(int yy=-1;yy<=1;yy++)for(int xx=-1;xx<=1;xx++){
-        vec3 c=texture2D(G,cuv+vec2(float(xx),float(yy))*o*.7).rgb;
-        same*=1.-step(c.b*1.1,c.g)*step(c.r*grassRatio*1.12,c.g);
-      }
-      float grass=step(1.5,t0)*same, dirt=step(.5,t0)*step(t0,1.5)*same;
-      if(h1>grass*.5+dirt*.3)return vec4(0.);
+      vec3 gr=dcell.rgb;
+      float grass=step(.75,dcell.a);
       float s;
       if(grass>.5)s=h4<.3?0.:h4<.5?1.:h4<.64?2.:h4<.74?3.:h4<.84?6.:h4<.94?4.:7.;
       else s=h4<.35?4.:h4<.6?5.:h4<.8?6.:1.;
@@ -505,7 +661,8 @@
       // todo lo que se pinta sobre el suelo (adornos, agua, escarcha) usa esta misma posición
       // deformada, para que gire con el vórtice y tiemble con el calor igual que la imagen del juego
       vec2 uvD=uv+hz+rz;
-      vec3 alb=vec3(texture2D(W,uvD+ca).r,texture2D(W,uvD).g,texture2D(W,uvD-ca).b);
+      vec3 alb=texture2D(W,uvD).rgb;
+      if(dot(ca*res,ca*res)>.04) alb=vec3(texture2D(W,uvD+ca).r,alb.g,texture2D(W,uvD-ca).b);
       // su núcleo oscuro (#140a26) se abre a otro sitio: nebulosa que se mueve y estrellas que titilan
       float core=0.; vec3 neb=vec3(0.);
       if(riftA>0.){
@@ -526,16 +683,8 @@
       vec2 wp=(vec2(uvD.x,1.-uvD.y)*res-cam)/art;
       vec2 pa=floor(wp*.5); // píxel de arte del mundo
 
-      // líquido del escenario: se reconoce por sus colores exactos (los del propio juego)
-      // Sólo coincidencias casi exactas (la hierba del Huerto está a 0,04 del pantano hondo) y
-      // en al menos 2 de 5 muestras: el agua tiene espuma y motas de otros colores.
-      float nl=0.;
-      for(int i=0;i<5;i++){
-        vec2 off=i==0?vec2(0.):i==1?vec2(2.,0.):i==2?vec2(-2.,0.):i==3?vec2(0.,2.):vec2(0.,-2.);
-        vec3 gs=texture2D(G,uvD+off*o).rgb;
-        nl+=1.-smoothstep(.008,.02,min(distance(gs,liqA),distance(gs,liqB)));
-      }
-      float liq=smoothstep(1.5,2.5,nl)*(1.-above);
+      // líquido del escenario: se reconoce por sus colores exactos (los del propio juego; ver FS_LIQ)
+      float liq=texture2D(LQ,uvD).r*(1.-above);
       // Reflejos: desde el agua se sube hasta la orilla (dos muestras seguidas que ya no son
       // agua, por la espuma) y se lee lo que hay a la misma distancia por encima de ella. Si es
       // un objeto (árbol, roca, Pokémon), se ve invertido y ondulado en el agua.
@@ -580,38 +729,45 @@
       // en los sprites manda su normal (capa de sprites): la luz les da volumen, no sólo brillo
       vec4 nb=texture2D(NB,uv);
       float onSpr=step(.5,nb.a);
+      // Luz por píxel de arte: en el suelo, toda la luz (sombras, antorcha, luces, luz rebotada,
+      // oclusión) se mira en el centro del píxel de arte del mundo, así cada píxel del dibujo queda
+      // de un solo tono en vez de cruzado por un degradado fino (que delataba un filtro encima).
+      // En los sprites no: se mueven entre píxeles del mundo y la rejilla los cortaría.
+      vec2 uvL=uv;
+      if(pixK>.5){
+        vec2 ac=(floor(wp*.5)+.5)*2.;                    // centro del píxel de arte, en el mundo
+        vec2 sp=ac*art+cam;                              // en pantalla (y hacia abajo)
+        uvL=mix(vec2(sp.x/res.x,1.-sp.y/res.y),uv,onSpr);
+      }
       vec2 sxy=nb.rg*2.-1.;
       vec3 sn=vec3(sxy,sqrt(max(0.,1.-dot(sxy,sxy))));
       n=normalize(mix(n,sn,onSpr*.85));
       float ndl=max(dot(n,normalize(vec3(moonDir,.9))),0.);
 
-      vec2 vis=texture2D(S,uv).rg;
+      vec2 vis=texture2D(S,uvL).rg;
       float moonVis=mix(1.,vis.r,shadowK);
-      // copas de los árboles: la luz de luna llega a manchas que se mecen con el viento
-      moonVis*=mix(1.,.55+.45*smoothstep(.3,.7,noise(wp*.012+vec2(time*.015,time*.01))),bFx.y);
+      moonVis*=texture2D(S,uvL).a; // copas y nubes (FS_SHADOW)
       float torchVis=mix(1.,vis.g,.88);
-      vec2 dT=(uv-center)*vec2(aspect,1.);
+      vec2 dT=(uvL-center)*vec2(aspect,1.);
       // escena clara (hielo, cielo, arena): menos antorcha, menos niebla y menos exposición,
       // o el suelo casi blanco se quema en crema y pierde su color
       float bk=smoothstep(.32,.62,texture2D(EXPO,vec2(.5)).r);
-      float att=torchAtt(uv)*(1.-.55*bk);
+      float att=torchAtt(uvL)*(1.-.55*bk);
       float tdl=.55+.45*max(dot(n,normalize(vec3(-dT,.35))),0.);
-      // Parpadeo de vela de cada emisor, cada zona a su ritmo. Se funde entre campos de ruido
-      // fijos: un ruido que se desplaza con el tiempo se ve como ráfagas de viento barriendo el suelo.
-      float ft=time*5., f0=floor(ft), fk=smoothstep(0.,1.,fract(ft));
-      float fn=mix(noise(wp*.008+f0*17.31),noise(wp*.008+(f0+1.)*17.31),fk);
-      float flk=1.+bFx.w*(fn-.5)*.35;
-      vec3 g=texture2D(GI,uv).rgb*gi*flk;
+      vec3 g=texture2D(GI,uvL*giST.xy+giST.zw).rgb*gi; // (con su parpadeo: FS_RCOUT)
       g/=1.+lum(g)*1.4; // tope suave: un lago de lava ilumina su orilla, no tiñe toda la pantalla
 
       // oclusión ambiental: el suelo se oscurece al pie de lo que tiene encima
-      float aoF=1.-ao*smoothstep(.05,.55,texture2D(B1,uv).a)*(1.-occ);
+      float aoF=1.-ao*smoothstep(.05,.55,texture2D(B1,uvL).a)*(1.-occ);
       // sombra de contacto: el suelo se oscurece justo al pie de cada objeto
-      aoF*=1.-.5*smoothstep(0.,.8,texture2D(S,uv).b);
+      aoF*=1.-.5*smoothstep(0.,.8,texture2D(S,uvL).b);
 
       // luz de contorno: borde del sprite que mira a la antorcha / a la luna
-      float ex=texture2D(M,uv+vec2(o.x,0)).a-texture2D(M,uv-vec2(o.x,0)).a;
-      float ey=texture2D(M,uv+vec2(0,o.y)).a-texture2D(M,uv-vec2(0,o.y)).a;
+      float ex=0.,ey=0.;
+      if(occ>.02&&onSpr<.5){ // (los sprites la sacan de su normal)
+        ex=texture2D(M,uv+vec2(o.x,0)).a-texture2D(M,uv-vec2(o.x,0)).a;
+        ey=texture2D(M,uv+vec2(0,o.y)).a-texture2D(M,uv-vec2(0,o.y)).a;
+      }
       vec2 edge=-vec2(ex,ey);
       edge=mix(edge,sxy*1.4,onSpr); // con normal de sprite, el borde que mira a la luz sale de ella
       float el=length(edge);
@@ -623,16 +779,18 @@
       // Luces puntuales: cada fuego, proyectil encendido o cosa que brilla es una luz de verdad,
       // un poco por encima del suelo. Cae con la distancia como una luz real (cuadrado inverso,
       // suavizado) y a los sprites los ilumina por el lado que mira hacia ella (su normal).
-      vec3 pl=vec3(0.);
+      vec3 pl=vec3(0.), ps=vec3(0.);
+      float matS=nb.b*onSpr, shin=10.+nb.b*60.;
       for(int i=0;i<16;i++){
         if(float(i)>=nLights)break;
         vec4 L=lp[i];
-        vec2 d=(L.xy-uv)*vec2(aspect,1.);
+        vec2 d=(L.xy-uvL)*vec2(aspect,1.);
         float r=L.z, dist=length(d);
         vec3 Ld=normalize(vec3(d,r*.35));
         float fall=1./(1.+dist*dist/(r*r)*2.)*(1.-smoothstep(r*1.6,r*3.,dist));
         float fl=1.+bFx.w*.25*sin(time*(9.+float(i)*1.7)+float(i)*4.1)*sin(time*5.3+float(i));
         pl+=lc[i]*L.w*fall*fl*mix(.4+.6*max(dot(n,Ld),0.),max(dot(n,Ld),0.)*1.2,onSpr);
+        if(matS>.01) ps+=lc[i]*L.w*fall*pow(max(dot(n,normalize(Ld+vec3(0.,0.,1.))),0.),shin);
       }
       vec3 light=ambient*aoF*(.7+.3*moonVis)+pl
                 +moon*ndl*moonVis*1.2
@@ -642,13 +800,29 @@
                 +vec3(.6,.35,1.)*riftA*exp(-rd*rd*.12)*(1.+.25*sin(time*3.)); // luz violeta de la grieta, que palpita
       vec3 e=m.rgb;
       float em=clamp(max(max(e.r,e.g),e.b)*2.,0.,1.);
-      vec3 b=(texture2D(B1,uv).rgb*.5+texture2D(B2,uv).rgb*.32+texture2D(B3,uv).rgb*.18)*flk;
+      vec3 b=texture2D(B1,uv).rgb*.5+texture2D(B2,uv).rgb*.32+texture2D(B3,uv).rgb*.18;
       // sombras con cambio de tono, como las pinta un pixel artist: no sólo más oscuras, más frías
       float shAmt=clamp((1.-moonVis)*1.3+(1.-torchVis)*smoothstep(.02,.3,att)+(1.-aoF)*1.5,0.,1.);
       // Suelo de luz: sombra de luna + sombra de antorcha + oclusión se multiplicaban y, donde
       // coincidían las tres, el suelo se quedaba casi negro. Nunca por debajo del 70 % del ambiente.
       light=max(light,ambient*.7);
+      // Escalones: la intensidad de la luz salta en pasos (cada uno ~19 % más claro que el
+      // anterior), como sombrea un pixel artist, con el borde de cada paso suavizado. Mitad
+      // escalonada y mitad continua: del todo escalonada se veían curvas de nivel.
+      if(bandK>0.){
+        float Ll=max(lum(light),.001), lg=log2(Ll)*4.;
+        float fl=floor(lg), fr=lg-fl;
+        float Lq=exp2((fl+smoothstep(.35,.65,fr))/4.);
+        light*=mix(1.,Lq/Ll,bandK);
+      }
       vec3 col=alb*light*mix(vec3(1.),shadowHue,shAmt*.8)+b*bloom*(1.-em*.8);
+      // brillo especular (cámara mirando desde arriba): el punto del sprite que refleja la luna,
+      // la antorcha o una luz cercana hacia nosotros. Cristales y gemas destellan; el pelo apenas.
+      if(matS>.01){
+        vec3 V=vec3(0.,0.,1.);
+        vec3 Hm=normalize(normalize(vec3(moonDir,.9))+V), Ht=normalize(normalize(vec3(-dT,.35))+V);
+        col+=matS*(moon*moonVis*pow(max(dot(n,Hm),0.),shin)*1.2+torch*att*torchVis*pow(max(dot(n,Ht),0.),shin)*1.8+ps*1.5);
+      }
       // el líquido: brillo propio (veneno, pantano), que respira despacio, y destellos donde le da la luz
       col+=liq*liqFx*bLiq.x*(.3+.06*sin(time*.8+noise(pa*.05)*6.));
       float glint=step(.985,hash(pa+floor(time*3.)))*step(.5,noise(pa*.2+time*.5));
@@ -671,20 +845,10 @@
       float frost=step(.994,hash(pa*1.7+floor(time*2.5)))*(1.-liq)*(1.-above)*bFx2.y;
       col+=frost*(vec3(.45,.5,.55)+torch*att+moon*moonVis*.6);
 
-      // niebla volumétrica anclada al mundo (se mueve con el viento, no con la cámara)
-      float dens=fbm(wp*.014+vec2(time*.05,time*.018));
-      dens=smoothstep(.3,1.,dens)*fog*.55*(1.-.65*bk); // rampa ancha: bordes difusos, sin manchas
-      // haces: de este píxel hacia la antorcha y hacia la luna, mirando qué parte está a la sombra
-      float sh=0.,sm=0.;
-      if(quality>.5){
-        float j=hash(uv*res+fract(time)*31.);
-        for(int i=0;i<10;i++){float t=(float(i)+j)/10.;
-          vec2 q=mix(uv,center,t*.9); sh+=texture2D(S,q).g*torchAtt(q);
-          sm+=texture2D(S,uv+vec2(moonDir.x/aspect,moonDir.y)*t*.08).r;}
-        sh/=10.; sm/=10.;
-      }else{sh=torchVis*att;sm=moonVis;}
-      vec3 scatter=fogCol+torch*sh*shafts*.8+moon*sm*.25*shafts+g*.6;
-      col=col*(1.-dens*.6)+scatter*dens;
+      // niebla y haces de luz (pasada aparte a 1/4 de resolución, ver FS_VOL)
+      vec4 vol=texture2D(VOL,uv);
+      float dens=vol.a; vec3 scatter=vol.rgb/max(dens,1e-3);
+      col=col*(1.-dens*.6)+vol.rgb;
 
       // partículas del escenario (luciérnagas, destellos, brasas, fuegos fatuos, esporas),
       // iluminadas por lo que haya cerca y con su propio brillo
@@ -755,10 +919,11 @@
   let P;
   try {
     P = {
-      prep: compile(FS_PREP), shadow: compile(FS_SHADOW), gi: compile(FS_GI), temporal: compile(FS_TEMPORAL), avg: compile(FS_AVG), pcol: compile(FS_PCOL),
-      down: compile(FS_DOWN), blur: compile(FS_BLUR), comp: compile(FS_COMP), floor: compile(FS_FLOOR)
+      prep: compile(FS_PREP), shadow: compile(FS_SHADOW), rc: compile(FS_RC), rcout: compile(FS_RCOUT), temporal: compile(FS_TEMPORAL), avg: compile(FS_AVG), pcol: compile(FS_PCOL),
+      down: compile(FS_DOWN), blur: compile(FS_BLUR), comp: compile(FS_COMP), floor: compile(FS_FLOOR), vol: compile(FS_VOL), decocell: compile(FS_DECOCELL), liq: compile(FS_LIQ)
     };
   } catch (e) { console.warn('[luz] shaders:', e); cv.remove(); return; }
+  for (const k in P) P[k].name = k;
 
   const quad = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, quad);
@@ -825,8 +990,10 @@
     T = {
       prep: target(...d(2)), shadow: target(...d(2)), shadowb: target(...d(2)),
       sHistA: target(...d(2)), sHistB: target(...d(2)),
-      q: target(...d(4)), gi: target(...d(4)), histA: target(...d(4)), histB: target(...d(4)),
-      giOut: target(...d(4)), giTmp: target(...d(4)),
+      q: target(...d(4)),
+      // cascadas: sondas cada 2 texels de 1/4, con margen para correr la rejilla con la cámara
+      ...(() => { const [qw, qh] = d(4), pw = Math.ceil((qw / 2 + 16) / 16) * 16, ph = Math.ceil((qh / 2 + 16) / 16) * 16;
+        return { rcA: target(pw * 2, ph * 2), rcB: target(pw * 2, ph * 2), giOut: target(pw, ph), giTmp: target(pw, ph) }; })(), vol: target(...d(4)), volTmp: target(...d(4)), liq: target(...d(2)),
       e8: target(...d(8)), e8b: target(...d(8)),
       e16: target(...d(16)), e16b: target(...d(16)),
       e32: target(...d(32)), e32b: target(...d(32)),
@@ -834,7 +1001,30 @@
     };
   }
 
+  // Perfilador (pruebas): tiempo de GPU de cada pasada con EXT_disjoint_timer_query. Las
+  // consultas se recogen frames después, cuando la GPU ya las ha resuelto.
+  const tq = gl.getExtension('EXT_disjoint_timer_query');
+  const profQ = [], prof = {}; let profFrames = 0;
+  function profBegin(name) {
+    if (!tune.prof || !tq) return null;
+    const q = tq.createQueryEXT(); tq.beginQueryEXT(tq.TIME_ELAPSED_EXT, q); return [name, q];
+  }
+  function profEnd(p) { if (p) { tq.endQueryEXT(tq.TIME_ELAPSED_EXT); profQ.push(p); } }
+  function profPoll() {
+    if (!tq) return;
+    if (tune.prof) profFrames++;
+    while (profQ.length && tq.getQueryObjectEXT(profQ[0][1], tq.QUERY_RESULT_AVAILABLE_EXT)) {
+      const [name, q] = profQ.shift();
+      if (!gl.getParameter(tq.GPU_DISJOINT_EXT)) prof[name] = (prof[name] || 0) + tq.getQueryObjectEXT(q, tq.QUERY_RESULT_EXT) / 1e6;
+      tq.deleteQueryEXT(q);
+    }
+  }
   function pass(prog, out, binds, set) {
+    if (tune.skip && tune.skip[prog.name]) return; // (pruebas de rendimiento)
+    const pq = profBegin(prog.name);
+    try { pass1(prog, out, binds, set); } finally { profEnd(pq); }
+  }
+  function pass1(prog, out, binds, set) {
     gl.useProgram(prog.p);
     gl.bindFramebuffer(gl.FRAMEBUFFER, out ? out.f : null);
     gl.viewport(0, 0, out ? out.w : cv.width, out ? out.h : cv.height);
@@ -859,16 +1049,45 @@
   let shown = PRESETS[mode === 'off' ? 'noche' : mode];
 
   // ---------- calidad automática ----------
-  // 3: GI 16 rayos · 2: GI 8 · 1: GI 4 · 0: sin GI ni haces
+  // 3: luz rebotada fina · 2 y 1: más gruesa, y sin reflejos en el agua · 0: sin luz rebotada ni haces
   let quality = matchMedia('(pointer:coarse)').matches ? 2 : 3;
-  const RAYS = [0, 4, 8, 16];
-  let slowSince = 0, fastSince = 0, lastT = 0, avgDt = 16;
+  const RC_STEPS = [0, 6, 10, 16]; // tope de pasos por tramo de cada cascada según la calidad
+  // El objetivo es la frecuencia de la pantalla (60, 120, 144 Hz...), no un número fijo: antes sólo
+  // bajaba de 47 fps y en una pantalla de 60 Hz se notaba lento sin que la calidad bajara nunca.
+  // La frecuencia sale de los frames más rápidos (con sincronía vertical, aunque se vaya lento,
+  // bastantes frames siguen llegando justo a tiempo). Si la media va un 15 % por encima durante 1,5 s,
+  // un escalón menos; para subir hace falta ir sobrado 6 s y, si al subir vuelve a ir lento, se
+  // espera cada vez más antes de intentarlo otra vez (sin eso oscilaba: sube, va lento, baja...).
+  let slowSince = 0, fastSince = 0, lastT = 0, avgDt = 16, refreshMs = 16.7, raisedAt = -1e9, upBlock = 0, upWait = 8000;
+  const dtRing = new Float32Array(120); let dtIdx = 0, dtN = 0, refreshKnown = false;
   function adapt(now) {
-    if (lastT) avgDt = avgDt * .95 + Math.min(100, now - lastT) * .05;
+    const dt = lastT ? Math.min(100, now - lastT) : 16;
     lastT = now;
-    if (avgDt > 21) { fastSince = 0; if (!slowSince) slowSince = now; else if (now - slowSince > 1500 && quality > 0) { quality--; slowSince = 0; } }
-    else if (avgDt < 13) { slowSince = 0; if (!fastSince) fastSince = now; else if (now - fastSince > 6000 && quality < 3) { if (quality === 0) fresh = 2; quality++; fastSince = 0; } }
-    else { slowSince = 0; fastSince = 0; }
+    avgDt = avgDt * .95 + dt * .05;
+    dtRing[dtIdx] = dt; dtIdx = (dtIdx + 1) % dtRing.length; dtN = Math.min(dtN + 1, dtRing.length);
+    if (dtN === dtRing.length && dtIdx === 0) {
+      const sorted = Array.from(dtRing).sort((a, b) => a - b);
+      // percentil 25, y como mucho 165 Hz: hay navegadores que entregan frames a ráfagas (dos
+      // seguidos casi sin espera) y con el percentil 5 la pantalla "parecía" de 250 Hz
+      refreshMs = Math.max(1000 / 165, Math.min(34, sorted[30]));
+      refreshKnown = true;
+    }
+    if (!refreshKnown) return;
+    // (a más de 75 fps no se baja nada aunque la pantalla dé más: ya va suelto; y por encima de
+    // 110 se puede subir aunque no llegue a la frecuencia de una pantalla muy rápida)
+    if (avgDt > refreshMs * 1.15 && avgDt > 1000 / 75) {
+      fastSince = 0;
+      if (!slowSince) slowSince = now;
+      else if (now - slowSince > 1500 && quality > 0) {
+        quality--; slowSince = 0;
+        if (now - raisedAt < 10000) upWait = Math.min(120000, upWait * 2); // la subida no aguantó
+        upBlock = now + upWait;
+      }
+    } else if (avgDt < refreshMs * 1.04 || avgDt < 1000 / 110) {
+      slowSince = 0;
+      if (!fastSince) fastSince = now;
+      else if (now - fastSince > 6000 && quality < 3 && now > upBlock) { if (quality === 0) fresh = 2; quality++; fastSince = 0; raisedAt = now; }
+    } else { slowSince = 0; fastSince = 0; }
   }
 
   // las 16 luces más fuertes del frame, en coordenadas del shader (y hacia arriba, radio en alturas de pantalla)
@@ -897,6 +1116,11 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, NBIO * 3, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
   }
+  // celdas de decoración visibles (128×128: una pantalla 4K a la escala más pequeña necesita ~110)
+  const TDC = target(128, 128);
+  gl.bindTexture(gl.TEXTURE_2D, TDC.t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   const TF = target(NBIO + 160, 1), floorPx = new Uint8Array((NBIO + 160) * 4);
   let floorAt = 0, floorPending = false, floorValid = false;
   // Se lee el resultado del cálculo del frame anterior (ya terminado: no hace esperar a la GPU)
@@ -908,7 +1132,7 @@
       gl.bindFramebuffer(gl.FRAMEBUFFER, TF.f);
       gl.readPixels(0, 0, NBIO + 160, 1, gl.RGBA, gl.UNSIGNED_BYTE, floorPx);
       const val = i => floorPx[i * 4] / 255 + floorPx[i * 4 + 1] / 65025;
-      for (let k = 0; k < NBIO; k++) frameFloor[k] = val(k) * 65536; // (en la escala de antes)
+      for (let k = 0; k < NBIO; k++) frameFloor[k] = val(k) * 65536; // (en la escala de antes: umbral 300 ≈ 0,5 %)
       let tot = 0;
       for (let k = 0; k < 160; k++) tot += (frameBins[k] = val(NBIO + k));
       if (tot > .01) { let acc = 0; for (let k = 0; k < 160; k++) { acc += frameBins[k]; if (acc >= tot / 2) { grassRatio = .8 + k / 100; break; } } }
@@ -916,6 +1140,36 @@
     }
     pass(P.floor, TF, [['G', texG], ['FC', texFC]], u => gl.uniform2f(u.res, game.width, game.height));
     floorPending = true;
+  }
+  // La rejilla de sondas va anclada al mundo (se corre con la cámara, en múltiplos de la
+  // separación más grande): con la rejilla fija en pantalla, la luz rebotada temblaba al andar.
+  let giST = [1, 1, 0, 0];
+  function radianceCascades(now, flick) {
+    const qw = T.q.w, qh = T.q.h, pw = T.giOut.w, ph = T.giOut.h, N = 5, per = 2 * 2 ** (N - 1);
+    const md = (x, m) => ((x % m) + m) % m;
+    const offX = md(camE / 4, per) - per, offY = md(-camF / 4, per) - per;
+    // la escena que mira cada cascada: cerca, a 1/4; lejos, las versiones reducidas
+    const scene = [T.q.t, T.q.t, T.e8.t, T.e16.t, T.e32.t];
+    let src = null, dst = T.rcA;
+    // pasos de cada tramo: uno por texel de la escena que mira (cerca no hacen falta tantos;
+    // lejos, con pocos, se saltaba lo fino y la luz se colaba), con tope según la calidad
+    const texel = [1, 1, 2, 4, 8], cap = RC_STEPS[quality];
+    for (let i = N - 1; i >= 0; i--) {
+      const steps = Math.max(2, Math.min(cap, 2 * 4 ** i / texel[i]));
+      pass(P.rc, dst, [['SC', scene[i]], ['UP', src ? src.t : T.rcB.t]], u => {
+        gl.uniform2f(u.qres, qw, qh); gl.uniform2f(u.p0, pw, ph); gl.uniform2f(u.off, offX, offY);
+        gl.uniform1f(u.ci, i); gl.uniform1f(u.last, i === N - 1 ? 1 : 0);
+        gl.uniform1f(u.L0, 2); gl.uniform1f(u.steps, steps); gl.uniform1f(u.texel, texel[i]);
+      });
+      src = dst; dst = dst === T.rcA ? T.rcB : T.rcA;
+    }
+    pass(P.rcout, T.giOut, [['C0', src.t]], u => {
+      gl.uniform2f(u.p0, pw, ph); gl.uniform1f(u.k, tune.giK); gl.uniform2f(u.off, offX, offY);
+      gl.uniform2f(u.cam, camE, camF); gl.uniform1f(u.art, artScale); gl.uniform1f(u.hgt, game.height);
+      gl.uniform1f(u.time, (now / 1000) % 3600); gl.uniform1f(u.flick, flick);
+    });
+    blur(T.giOut, T.giTmp);
+    giST = [qw / (2 * pw), qh / (2 * ph), -offX / (2 * pw), -offY / (2 * ph)];
   }
   let artScale = 2.5, camE = 0, camF = 0, prevE = 0, prevF = 0, debug = 0, frame = 0, histFlip = false;
   function render(now) {
@@ -987,6 +1241,8 @@
       gl.uniform1f(u.frame, frame % 1000);
       gl.uniform1f(u.jmode, tune.jmode);
       gl.uniform2f(u.cam, camE, camF);
+      gl.uniform1f(u.time, (now / 1000) % 3600); gl.uniform1f(u.canopy, bio.canopy);
+      gl.uniform1f(u.clouds, calm ? bio.clouds * .5 : bio.clouds);
     });
     const camShift = [(prevE - camE) / w, (camF - prevF) / h];
     const sHist = histFlip ? T.sHistA : T.sHistB, sHistOut = histFlip ? T.sHistB : T.sHistA;
@@ -1003,31 +1259,16 @@
 
     // escena a 1/4 para la luz global
     down(T.prep, T.q);
-    const hist = histFlip ? T.histA : T.histB, histOut = histFlip ? T.histB : T.histA;
     histFlip = !histFlip;
-    if (quality > 0) {
-      pass(P.gi, T.gi, [['S', T.q.t]], u => {
-        gl.uniform2f(u.res, T.q.w, T.q.h);
-        gl.uniform1f(u.frame, frame % 1000);
-        gl.uniform1f(u.rays, RAYS[quality]);
-      });
-      pass(P.temporal, histOut, [['C', T.gi.t], ['H', hist.t]], u => {
-        gl.uniform2f(u.shift, camShift[0], camShift[1]);
-        gl.uniform2f(u.texel, 1 / T.gi.w, 1 / T.gi.h);
-        gl.uniform1f(u.blend, fresh ? 1 : .22);
-        gl.uniform1f(u.clampK, 0);
-      });
-      pass(P.down, T.giOut, [['T', histOut.t]], u => gl.uniform2f(u.px, 0, 0));
-      blur(T.giOut, T.giTmp);
-    } else {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, T.giOut.f); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
-    }
     prevE = camE; prevF = camF;
 
-    // bloom en tres escalas (el alfa lleva los oclusores desenfocados → oclusión ambiental)
+    // bloom en tres escalas (el alfa lleva los oclusores desenfocados → oclusión ambiental);
+    // las cascadas lejanas miran la escena en estas versiones reducidas
     down(T.q, T.e8); blur(T.e8, T.e8b); blur(T.e8, T.e8b);
     down(T.e8, T.e16); blur(T.e16, T.e16b); blur(T.e16, T.e16b);
     down(T.e16, T.e32); blur(T.e32, T.e32b); blur(T.e32, T.e32b);
+
+    if (quality > 0) radianceCascades(now, bio.flicker); else { gl.bindFramebuffer(gl.FRAMEBUFFER, T.giOut.f); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
 
     pass(P.pcol, T.pcol, [['W', texW], ['M', T.prep.t], ['G', texG]], u => {
       gl.uniform2f(u.center, center[0], center[1]);
@@ -1042,8 +1283,35 @@
       gl.uniform1f(u.blend, fresh ? 1 : Math.max(.15, Math.min(1, dt * 3))); gl.uniform1f(u.clampK, 0);
     });
 
+    // decoración (por celdas) y máscara de líquidos, antes de la composición
+    const cell0 = [Math.floor(-camE / (artScale * 28)) - 1, Math.floor(-camF / (artScale * 28)) - 1];
+    if (decoOn && quality > 0) pass(P.decocell, TDC, [['G', texG]], u => {
+      gl.uniform2f(u.res, w, h); gl.uniform2f(u.cam, camE, camF); gl.uniform2f(u.cell0, cell0[0], cell0[1]);
+      gl.uniform1f(u.art, artScale); gl.uniform1f(u.grassRatio, grassRatio);
+    });
+    {
+      const liq = dom ? dom.liq.map(hex) : [[9, 9, 9], [9, 9, 9]];
+      pass(P.liq, T.liq, [['G', texG]], u => {
+        gl.uniform2f(u.o, artScale / w, artScale / h); gl.uniform2f(u.full, w, h);
+        gl.uniform3fv(u.liqA, liq[0]); gl.uniform3fv(u.liqB, liq[1]);
+      });
+    }
+    pass(P.vol, T.vol, [['S', T.shadow.t], ['GI', T.giOut.t], ['EXPO', aOut.t]], u => {
+      gl.uniform2f(u.res, w, h); gl.uniform2f(u.cam, camE, camF);
+      gl.uniform2f(u.moonDir, S.moonDir[0], S.moonDir[1]); gl.uniform2f(u.center, center[0], center[1]);
+      gl.uniform1f(u.art, artScale); gl.uniform1f(u.aspect, w / h); gl.uniform1f(u.time, (now / 1000) % 3600);
+      gl.uniform1f(u.quality, quality); gl.uniform1f(u.fog, S.fog); gl.uniform1f(u.shafts, S.shafts);
+      gl.uniform1f(u.gi, S.gi); gl.uniform1f(u.torchR, S.torchR);
+      for (const k of ['fogCol', 'torch', 'moon']) gl.uniform3fv(u[k], S[k]);
+      gl.uniform4fv(u.giST, giST);
+      setLights(u, w, h);
+    });
+    blur(T.vol, T.volTmp); // (el ruido de los haces, que antes quedaba por píxel)
     pass(P.comp, null, [['W', texW], ['S', T.shadow.t], ['M', T.prep.t], ['GI', T.giOut.t],
-      ['B1', T.e8.t], ['B2', T.e16.t], ['B3', T.e32.t], ['NB', texNB], ['G', texG], ['DECO', texDeco], ['EXPO', aOut.t]], u => {
+      ['B1', T.e8.t], ['B2', T.e16.t], ['B3', T.e32.t], ['NB', texNB], ['G', texG], ['DECO', texDeco], ['EXPO', aOut.t], ['VOL', T.vol.t], ['LQ', T.liq.t], ['DC', TDC.t]], u => {
+      gl.uniform4fv(u.giST, giST);
+      gl.uniform1f(u.pixK, tune.pix ? 1 : 0); gl.uniform1f(u.bandK, tune.bands); gl.uniform1f(u.clouds, calm ? bio.clouds * .5 : bio.clouds);
+      gl.uniform2f(u.cell0, cell0[0], cell0[1]);
       gl.uniform1f(u.decoOn, decoOn ? decoFade * decoFade * (3 - 2 * decoFade) : 0);
       gl.uniform1f(u.grassRatio, grassRatio);
       gl.uniform2f(u.res, w, h);
@@ -1077,6 +1345,7 @@
       setLights(u, w, h);
     });
     if (fresh) fresh--;
+    profPoll();
     meterExposure(now, aOut);
     if (onFrame) onFrame(gl, camE, camF);
   }
@@ -1121,9 +1390,14 @@
   let onFrame = null; // gancho de pruebas: se llama con el frame ya pintado (aún legible)
   // jmode 2: ruido anclado al mundo (no titila al mover la cámara). Medido con _test/flicker.js:
   // la mezcla temporal deja el parpadeo de las sombras en movimiento entre 2 y 4 veces más bajo.
-  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true };
+  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true, giK: .55, pix: true, bands: .35 };
 
   function snap(t) {
+    if (tune.skip && tune.skip.snap) return;
+    const pq = profBegin('snap');
+    try { snap1(t); } finally { profEnd(pq); }
+  }
+  function snap1(t) {
     gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, game);
   }
@@ -1237,6 +1511,7 @@
     fx.fillStyle = fx.strokeStyle = '#fff';
   }
   function fxUpload() {
+    if (tune.skip && tune.skip.fxup) return;
     gl.bindTexture(gl.TEXTURE_2D, texFX);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fxCv);
     gl.bindTexture(gl.TEXTURE_2D, texATK);
@@ -1273,7 +1548,7 @@
   // ---------- capa de sprites: sombras con su forma real y normales (G-buffer) ----------
   // Cada sprite que el juego pinta sobre el suelo (Pokémon, árboles, rocas, hierba, objetos) se
   // repite aquí, con su misma transformación, en tres capas:
-  //  · normales (rg: hacia dónde mira cada píxel; b: altura sobre el pie; a: hay sprite), a
+  //  · normales (rg: hacia dónde mira cada píxel; b: cuánto brilla su material; a: hay sprite), a
   //    media resolución (a completa costaba subirla a la GPU cada frame y no se notaba). La normal sale de inflar la silueta (bordes redondeados) y de su
   //    propio sombreado pintado, como hacen SpriteIlluminator o Laigter con los sprites 2D.
   //  · sombra de la luna y sombra de la antorcha, a media resolución: la silueta del sprite
@@ -1319,25 +1594,46 @@
   // Pokémon, un árbol...) se lee entera una sola vez, y los fotogramas se recortan de esa copia.
   // Se guardan las últimas 12 (los fotogramas nuevos de un Pokémon van llegando poco a poco).
   const sheetPx = new Map();
+  // Una imagen se decodifica antes en segundo plano (createImageBitmap): leerla directamente
+  // obligaba al navegador a decodificar la hoja entera en el momento (10-70 ms seguidos).
+  const decoded = new WeakMap(); // imagen → ImageBitmap (o 'esperando')
   function pixelsOf(img) {
-    let p = sheetPx.get(img);
-    if (p !== undefined) return p;
+    const isImg = img instanceof HTMLImageElement;
+    if (isImg && !(img.complete && img.naturalWidth)) return undefined; // aún cargando: más tarde
+    let p = isImg ? sheetPx.get(img) : undefined;
+    if (p !== undefined) { sheetPx.delete(img); sheetPx.set(img, p); return p; } // (la más usada, la última en salir)
+    let src = img;
+    if (isImg && window.createImageBitmap) {
+      const bm = decoded.get(img);
+      if (bm === undefined) {
+        decoded.set(img, 'esperando');
+        createImageBitmap(img).then(b => decoded.set(img, b), () => decoded.set(img, null));
+        return undefined;
+      }
+      if (bm === 'esperando') return undefined;
+      if (bm) src = bm;
+    }
     p = null;
     const w = img.width, h = img.height;
     if (w > 0 && h > 0 && w * h <= 2048 * 2048) {
       const c = document.createElement('canvas'); c.width = w; c.height = h;
       const x = c.getContext('2d', { willReadFrequently: true });
-      try { _draw.call(x, img, 0, 0); p = { d: x.getImageData(0, 0, w, h).data, w, h }; } catch (e) { p = null; }
+      try { _draw.call(x, src, 0, 0); p = { d: x.getImageData(0, 0, w, h).data, w, h }; } catch (e) { p = null; }
+      if (src !== img) { src.close(); decoded.delete(img); }
     }
-    sheetPx.set(img, p);
-    if (sheetPx.size > 12) sheetPx.delete(sheetPx.keys().next().value);
+    // los canvas no se guardan: el juego puede repintarlos
+    if (isImg) { sheetPx.set(img, p); if (sheetPx.size > 12) sheetPx.delete(sheetPx.keys().next().value); }
     return p;
   }
   function analyzeSprite(img, sx, sy, sw, sh) {
     const src = pixelsOf(img);
+    if (src === undefined) return undefined; // (imagen aún cargando: se vuelve a intentar)
     if (!src || sx < 0 || sy < 0 || sx + sw > src.w || sy + sh > src.h) return null;
     const px = new Uint8ClampedArray(sw * sh * 4);
     for (let y = 0; y < sh; y++) px.set(src.d.subarray(((sy + y) * src.w + sx) * 4, ((sy + y) * src.w + sx + sw) * 4), y * sw * 4);
+    return analyzePixels(img, px, sw, sh);
+  }
+  function analyzePixels(img, px, sw, sh) {
     const n = sw * sh, A = new Uint8Array(n);
     let top = sh, foot = -1;
     for (let i = 0; i < n; i++) if (px[i * 4 + 3] > 127) { A[i] = 1; const y = (i / sw) | 0; if (y < top) top = y; if (y > foot) foot = y; }
@@ -1358,6 +1654,11 @@
       const t = Math.min(D[i], R) / R;
       Z[i] = R * Math.sqrt(1 - (1 - t) * (1 - t)) + (.299 * px[i * 4] + .587 * px[i * 4 + 1] + .114 * px[i * 4 + 2]) / 255 * 1.2;
     }
+    // material (cuánto brilla al reflejar la luz): cristal mucho, gemas y objetos bastante, roca
+    // algo, hojas y hierba poco, Pokémon poco (pelo, escamas mates)
+    const dims = img.width + 'x' + img.height;
+    const mat = img instanceof HTMLImageElement ? .14 : dims === '26x40' ? .95 : dims === '22x17' ? .4 :
+      (dims === '30x40' || dims === '28x40' || dims === '20x17') ? .1 : .35;
     // ¿brilla? (lo muy claro y saturado: llamas, brasas, gemas). Fracción, color y centro de lo que brilla
     const sst = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
     let ew = 0, er = 0, eg = 0, eb = 0, ex = 0, ey = 0, opaque = 0;
@@ -1379,10 +1680,13 @@
       let nx = -(z(k + 1, y) - z(k - 1, y)) * .5, ny = (z(k, y + 1) - z(k, y - 1)) * .5;
       const l = Math.hypot(nx, ny, 1); nx /= l; ny /= l;
       const hgt = Math.min(255, (foot - y) * 2); // altura sobre el pie, en píxeles de arte ×2
-      N[i * 4] = (nx * .5 + .5) * 255; N[i * 4 + 1] = (ny * .5 + .5) * 255; N[i * 4 + 2] = hgt; N[i * 4 + 3] = 255;
+      // (lo claro brilla más que lo oscuro del mismo material)
+      const lu = (.299 * px[i * 4] + .587 * px[i * 4 + 1] + .114 * px[i * 4 + 2]) / 255;
+      N[i * 4] = (nx * .5 + .5) * 255; N[i * 4 + 1] = (ny * .5 + .5) * 255; N[i * 4 + 2] = mat * (.35 + .65 * lu) * 255; N[i * 4 + 3] = 255;
       Sd[i * 4] = 255; Sd[i * 4 + 1] = hgt; Sd[i * 4 + 3] = 255;
     }
-    nrm.getContext('2d').putImageData(ni, 0, 0); sil.getContext('2d').putImageData(si, 0, 0);
+    // (éstos sí, en la GPU: se dibujan cientos de veces por frame)
+    nrm.getContext('2d', { willReadFrequently: false }).putImageData(ni, 0, 0); sil.getContext('2d', { willReadFrequently: false }).putImageData(si, 0, 0);
     return { foot, top, fl, fr, nrm, sil, emit, ecol, ecx, ecy };
   }
   function spriteData(img, sx, sy, sw, sh) {
@@ -1405,12 +1709,12 @@
   function runAnalysis() {
     sprQueued = false;
     const t0 = performance.now();
-    try {
-      while (sprQueue.length && performance.now() - t0 < 3) {
-        const [img, sx, sy, sw, sh, byRect, key] = sprQueue.shift();
-        byRect.set(key, analyzeSprite(img, sx, sy, sw, sh)); sprNew++;
-      }
-    } catch (e) { fail(e); }
+    while (sprQueue.length && performance.now() - t0 < 3) {
+      const [img, sx, sy, sw, sh, byRect, key] = sprQueue.shift();
+      let r = null;
+      try { r = analyzeSprite(img, sx, sy, sw, sh); } catch (e) { r = null; } // sin sombra, pero la luz sigue
+      if (r === undefined) byRect.delete(key); else byRect.set(key, r); sprNew++;
+    }
     const dt = performance.now() - t0; stats.anaMs = (stats.anaMs || 0) + dt; stats.anaMax = Math.max(stats.anaMax || 0, dt);
     if (sprQueue.length) { sprQueued = true; idle(runAnalysis); }
   }
@@ -1470,6 +1774,10 @@
     }
   }
   function spriteUpload() {
+    const pq = profBegin('capaSubir');
+    try { spriteUpload1(); } finally { profEnd(pq); }
+  }
+  function spriteUpload1() {
     const t0 = performance.now();
     if (blobs.length) {
       sm.globalCompositeOperation = 'lighter'; sm.globalAlpha = 1; sm.fillStyle = blobGrad;
@@ -1585,7 +1893,7 @@
   });
   // Ajustes que manda la extensión desde su menú (mismo origen, sólo estas tres claves)
   addEventListener('message', e => {
-    if (e.source !== window || !e.data || typeof e.data.psLuz !== 'object') return;
+    if (e.source !== window || !e.data || !e.data.psLuz || typeof e.data.psLuz !== 'object') return;
     const a = e.data.psLuz;
     if (MODES.includes(a.mode) && a.mode !== mode) { mode = a.mode; apply(); }
     if (typeof a.variantes === 'boolean') variantsOn = a.variantes;
@@ -1597,13 +1905,17 @@
   window.PS_LUZ = {
     get mode() { return mode; }, set mode(m) { if (MODES.includes(m)) { mode = m; apply(); } },
     get quality() { return quality; }, set quality(q) { quality = Math.max(0, Math.min(3, q | 0)); },
-    get fps() { return Math.round(1000 / avgDt); },
+    get fps() { return Math.round(1000 / avgDt); }, get hz() { return Math.round(1000 / refreshMs); },
     set debug(d) { debug = d; }, set onFrame(f) { onFrame = f; }, tune, stats,
     get variantes() { return variantsOn; }, set variantes(v) { variantsOn = !!v; },
     get deco() { return decoOn; }, set deco(v) { decoOn = !!v; }, get grassRatio() { return grassRatio; },
     get exposicion() { return +expoGain.toFixed(3); },
     get companero() { return partnerCol.map(v => Math.round(v * 255)); },
     get bioma() { return bioNow >= 0 ? BIOMES[bioNow].id : null; }, BIOMES, PRESETS,
-    capas: { luna: smCv, antorcha: stCv, normales: nbCv }
+    capas: { luna: smCv, antorcha: stCv, normales: nbCv },
+    // tiempo de GPU por pasada, en ms por frame (PS_LUZ.tune.prof = true para medir)
+    get perfil() { const o = {}; let tot = 0; for (const k in prof) { o[k] = +(prof[k] / Math.max(1, profFrames)).toFixed(3); tot += prof[k]; } o.total = +(tot / Math.max(1, profFrames)).toFixed(2); return o; },
+    get suelo() { const o = {}; BIOMES.forEach((b, i) => { if (frameFloor[i] > 1) o[b.id] = Math.round(frameFloor[i]); }); return { escenarios: o, decoFade: +decoFade.toFixed(2), grassRatio }; },
+    perfilReset() { for (const k in prof) delete prof[k]; profFrames = 0; }
   };
 })();

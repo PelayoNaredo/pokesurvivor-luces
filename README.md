@@ -6,7 +6,9 @@ change the game itself, and it only runs on pokesurvivor.com.
 
 | Original | With the extension |
 | --- | --- |
-| ![Original game](docs/huerto-antes.jpg) | ![With lights and shadows](docs/huerto-despues.jpg) |
+| ![Original game](docs/bosque-antes.jpg) | ![With lights and shadows](docs/bosque-despues.jpg) |
+
+![Palkia's rift: shadows with the real shape, water and glowing attacks](docs/grieta-agua.jpg)
 
 ## How to install
 
@@ -85,9 +87,15 @@ On the extensions page, click **Remove** on the extension's card. You can then d
 - **Volume on sprites:** every sprite gets a normal map generated from its silhouette and
   shading, so light wraps around it instead of just brightening it.
 - **Real point lights:** anything that glows (fire attacks, embers, gems) becomes a light
-  that falls off with distance like a real one and lights each sprite on the side facing it.
-- **Global illumination:** fires, pumpkins, lava, crystals and attacks light up their
-  surroundings in their own colour.
+  that falls off with distance like a real one, lights each sprite on the side facing it and
+  makes the fog around it glow.
+- **Bounced light with Radiance Cascades:** fires, lava, crystals and attacks light up their
+  surroundings in their own colour, blocked by whatever stands in the way. No noise, no
+  smearing when you move.
+- **Light that respects the pixel art:** on the ground, light is worked out once per art pixel
+  and steps in soft bands, like hand-shaded pixel art, instead of a smooth filter on top.
+- **Materials:** crystals and gems glint, rocks shine a little, fur and leaves stay matte.
+- **Clouds** drift over the moon and slide huge, slow shadows across open areas.
 - **Soft fog with light shafts**, floating particles and rim light on characters.
 - **Living water:** caustics, bubbles, glints, drifting clouds reflected on the whole surface,
   and reflections of whatever stands on the water or by its shore.
@@ -104,7 +112,8 @@ On the extensions page, click **Remove** on the extension's card. You can then d
   extension switches itself off and you see the normal game.
 - It respects your system's "reduce motion" setting: no lightning, no heat shimmer and no
   vortex in the rifts.
-- Quality lowers itself if the frame rate drops.
+- Quality adapts to your screen: if the game stops keeping up with your monitor's refresh rate
+  (60, 120, 144 Hz...), it steps down, and it only steps back up when there is room to spare.
 - It doesn't send anything anywhere. It only stores the three menu settings in your browser
   (if you have browser sync on, the browser copies them between your devices).
 - Chrome may show a notice about developer-mode extensions when it starts. That's normal for
