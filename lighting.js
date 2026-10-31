@@ -157,7 +157,6 @@
       tint: [1, 1, 1], fogCol: [.08, .08, .1], fogMul: 1, moonMul: 1, canopy: 0, lightning: 0, flicker: 0, emit: 1
     }, LIQ_FX[ltype], MOTES[motes], extra));
   }
-  const FLOOR_RGB = BIOMES.map(b => b.floor.map(h => { const [r, g, bb] = hex(h); return (Math.round(r * 255) << 16) | (Math.round(g * 255) << 8) | Math.round(bb * 255); }));
   const NEUTRAL = { tint: [1, 1, 1], fogCol: [0, 0, 0], fogMul: 1, moonMul: 1, canopy: 0, lightning: 0, flicker: 0, emit: 1,
     liqGlow: 0, caustic: 0, bubbles: 0, spec: 0, moteCol: [.05, .08, .04], moteDen: .56, moteRise: .15, moteBlink: 0, moteSize: 1,
     heat: 0, glitter: 0, vignetteMul: 1, flashCol: [.55, .6, .85], gLow: [1, 1, 1], gHigh: [1, 1, 1] };
@@ -386,6 +385,32 @@
         float w=smoothstep(.6,.95,texture2D(M,q).a)*smoothstep(.12,.3,distance(c,texture2D(G,q).rgb))*(mx-mn)*smoothstep(.15,.4,mx);
         s+=c*w; n+=w;}
       gl_FragColor=vec4(n>.01?s/n:vec3(1.),clamp(n,0.,1.));}`;
+
+  // 4d) escenario y verde de la hierba, contados en la GPU sobre la foto del suelo (64×36 muestras).
+  // x < nº de escenarios: fracción de muestras con el suelo exacto de cada uno; después, histograma
+  // del verde/rojo de lo verde (160 cubos de 0,01 desde 0,8). Antes se leían en la CPU los píxeles
+  // de cada trozo de suelo nuevo, y cada lectura frenaba la GPU: tirones al andar por terreno nuevo.
+  const NBIO = BIOMES.length;
+  const FS_FLOOR = HEAD + `uniform sampler2D G,FC; uniform vec2 res;
+    vec3 at(int i,int j){ vec2 q=(vec2(float(i),float(j))+.5)/vec2(64.,36.); return texture2D(G,(floor(q*res)+.5)/res).rgb; }
+    void main(){
+      float x=floor(gl_FragCoord.x), c=0.;
+      if(x<${NBIO}.){
+        vec3 f0=texture2D(FC,vec2((x*3.+.5)/${NBIO * 3}.,.5)).rgb, f1=texture2D(FC,vec2((x*3.+1.5)/${NBIO * 3}.,.5)).rgb, f2=texture2D(FC,vec2((x*3.+2.5)/${NBIO * 3}.,.5)).rgb;
+        for(int j=0;j<36;j++)for(int i=0;i<64;i++){
+          vec3 g=at(i,j);
+          c+=step(min(min(distance(g,f0),distance(g,f1)),distance(g,f2)),.005);
+        }
+      } else {
+        float bin=x-${NBIO}.;
+        for(int j=0;j<36;j++)for(int i=0;i<64;i++){
+          vec3 g=at(i,j);
+          if(g.g>g.r&&g.g>g.b&&g.r>.032) c+=step(abs(floor((g.g/g.r-.8)*100.+.5)-bin),.1);
+        }
+      }
+      float v=c/2304.;
+      gl_FragColor=vec4(floor(v*255.)/255.,fract(v*255.),0.,1.);
+    }`;
 
   const FS_DOWN = HEAD + `uniform sampler2D T;uniform vec2 px;
     void main(){gl_FragColor=(texture2D(T,uv+px*vec2(-1,-1))+texture2D(T,uv+px*vec2(1,-1))+texture2D(T,uv+px*vec2(-1,1))+texture2D(T,uv+px*vec2(1,1)))*.25;}`;
@@ -731,7 +756,7 @@
   try {
     P = {
       prep: compile(FS_PREP), shadow: compile(FS_SHADOW), gi: compile(FS_GI), temporal: compile(FS_TEMPORAL), avg: compile(FS_AVG), pcol: compile(FS_PCOL),
-      down: compile(FS_DOWN), blur: compile(FS_BLUR), comp: compile(FS_COMP)
+      down: compile(FS_DOWN), blur: compile(FS_BLUR), comp: compile(FS_COMP), floor: compile(FS_FLOOR)
     };
   } catch (e) { console.warn('[luz] shaders:', e); cv.remove(); return; }
 
@@ -862,6 +887,36 @@
     if (u['lp[0]']) { gl.uniform4fv(u['lp[0]'], lpBuf); gl.uniform3fv(u['lc[0]'], lcBuf); }
     gl.uniform1f(u.nLights, tune.lights ? k : 0);
   }
+  // colores de suelo de cada escenario (3 por escenario; si tiene 2, el último se repite)
+  const texFC = tex();
+  {
+    const px = new Uint8Array(NBIO * 3 * 4);
+    BIOMES.forEach((b, i) => { for (let k = 0; k < 3; k++) { const c = hex(b.floor[Math.min(k, b.floor.length - 1)]); for (let ch = 0; ch < 3; ch++) px[(i * 3 + k) * 4 + ch] = Math.round(c[ch] * 255); px[(i * 3 + k) * 4 + 3] = 255; } });
+    gl.bindTexture(gl.TEXTURE_2D, texFC);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, NBIO * 3, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  }
+  const TF = target(NBIO + 160, 1), floorPx = new Uint8Array((NBIO + 160) * 4);
+  let floorAt = 0, floorPending = false, floorValid = false;
+  // Se lee el resultado del cálculo del frame anterior (ya terminado: no hace esperar a la GPU)
+  // y se lanza el siguiente. Dos veces por segundo basta: los escenarios se funden en 2,5 s.
+  function floorStats(now) {
+    if (now - floorAt < 450) return;
+    floorAt = now;
+    if (floorPending) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, TF.f);
+      gl.readPixels(0, 0, NBIO + 160, 1, gl.RGBA, gl.UNSIGNED_BYTE, floorPx);
+      const val = i => floorPx[i * 4] / 255 + floorPx[i * 4 + 1] / 65025;
+      for (let k = 0; k < NBIO; k++) frameFloor[k] = val(k) * 65536; // (en la escala de antes)
+      let tot = 0;
+      for (let k = 0; k < 160; k++) tot += (frameBins[k] = val(NBIO + k));
+      if (tot > .01) { let acc = 0; for (let k = 0; k < 160; k++) { acc += frameBins[k]; if (acc >= tot / 2) { grassRatio = .8 + k / 100; break; } } }
+      floorValid = true;
+    }
+    pass(P.floor, TF, [['G', texG], ['FC', texFC]], u => gl.uniform2f(u.res, game.width, game.height));
+    floorPending = true;
+  }
   let artScale = 2.5, camE = 0, camF = 0, prevE = 0, prevF = 0, debug = 0, frame = 0, histFlip = false;
   function render(now) {
     const w = game.width, h = game.height;
@@ -871,8 +926,9 @@
     shown = lerpPreset(shown, PRESETS[mode] || shown, .04);
     frame++;
     const center = [0.5, 0.52];
+    floorStats(now);
 
-    // escenario: el que más suelo pinta en este frame; fundido de ~1 s entre uno y otro
+    // escenario: el que más suelo hay en pantalla (última lectura); fundido entre uno y otro
     const dt = Math.min(.1, (now - (render.last || now)) / 1000); render.last = now;
     let best = -1, bestN = 0, total = 0, second = 0;
     for (let s = 0; s < BIOMES.length; s++) {
@@ -883,7 +939,7 @@
     // con suelo de sobra en pantalla y ninguno conocido (un escenario nuevo, las arenas): ambiente neutro
     // el primero que se reconoce entra ya (al empezar no hay nada de qué fundir)
     if (best >= 0 && bioNow < 0 && !bioW.some(x => x > 0)) bioW[best] = 1;
-    if (best >= 0) bioNow = best; else if (frameChunks >= 2 && binsFrame === frameId) bioNow = -1;
+    if (best >= 0) bioNow = best; else if (floorValid && frameChunks >= 2 && binsFrame === frameId) bioNow = -1;
     // Fundido lineal de 2,5 s con curva suave en los extremos: el juego tarda en cambiar el
     // suelo y un fundido corto y exponencial se notaba como un salto.
     for (let s = 0; s < BIOMES.length; s++) bioW[s] = Math.max(0, Math.min(1, bioW[s] + (s === bioNow ? 1 : -1) * dt / 2.5));
@@ -1237,7 +1293,7 @@
   const blobGrad = sm.createRadialGradient(0, 0, 0, 0, 0, 1);
   blobGrad.addColorStop(0, 'rgb(0,0,170)'); blobGrad.addColorStop(.55, 'rgb(0,0,110)'); blobGrad.addColorStop(1, 'rgb(0,0,0)');
   const sprInfo = new WeakMap(); // imagen → Map(recorte → datos del sprite, o null si está vacío)
-  let sprBudget = 0, sprOn = false, moonOx = .5, moonOy = .75, sprT = 0, sprCount = 0, sprNew = 0;
+  let sprOn = false, moonOx = .5, moonOy = .75, sprT = 0, sprCount = 0, sprNew = 0;
   const blobs = []; // manchas de contacto del frame: escala x, escala y, centro x, centro y
   const lights = []; // luces puntuales del frame: [x, y, radio, fuerza, r, g, b] en píxeles de pantalla
   // Un sprite que brilla (llamas, brasas, gemas) se convierte en una luz puntual en el centro de
@@ -1259,11 +1315,29 @@
   }
 
   // Lee el sprite una sola vez: pie (fila opaca más baja), ancho del pie, silueta y normales.
+  // Leer píxeles obliga a la GPU a esperar: cada imagen (una hoja con todos los fotogramas de un
+  // Pokémon, un árbol...) se lee entera una sola vez, y los fotogramas se recortan de esa copia.
+  // Se guardan las últimas 12 (los fotogramas nuevos de un Pokémon van llegando poco a poco).
+  const sheetPx = new Map();
+  function pixelsOf(img) {
+    let p = sheetPx.get(img);
+    if (p !== undefined) return p;
+    p = null;
+    const w = img.width, h = img.height;
+    if (w > 0 && h > 0 && w * h <= 2048 * 2048) {
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const x = c.getContext('2d', { willReadFrequently: true });
+      try { _draw.call(x, img, 0, 0); p = { d: x.getImageData(0, 0, w, h).data, w, h }; } catch (e) { p = null; }
+    }
+    sheetPx.set(img, p);
+    if (sheetPx.size > 12) sheetPx.delete(sheetPx.keys().next().value);
+    return p;
+  }
   function analyzeSprite(img, sx, sy, sw, sh) {
-    const c = document.createElement('canvas'); c.width = sw; c.height = sh;
-    const x = c.getContext('2d', { willReadFrequently: true });
-    let px;
-    try { _draw.call(x, img, sx, sy, sw, sh, 0, 0, sw, sh); px = x.getImageData(0, 0, sw, sh).data; } catch (e) { return null; }
+    const src = pixelsOf(img);
+    if (!src || sx < 0 || sy < 0 || sx + sw > src.w || sy + sh > src.h) return null;
+    const px = new Uint8ClampedArray(sw * sh * 4);
+    for (let y = 0; y < sh; y++) px.set(src.d.subarray(((sy + y) * src.w + sx) * 4, ((sy + y) * src.w + sx + sw) * 4), y * sw * 4);
     const n = sw * sh, A = new Uint8Array(n);
     let top = sh, foot = -1;
     for (let i = 0; i < n; i++) if (px[i * 4 + 3] > 127) { A[i] = 1; const y = (i / sw) | 0; if (y < top) top = y; if (y > foot) foot = y; }
@@ -1316,13 +1390,29 @@
     if (!byRect) { byRect = new Map(); sprInfo.set(img, byRect); }
     const key = sx + ',' + sy + ',' + sw + ',' + sh;
     const d = byRect.get(key);
-    if (d !== undefined) return d;
-    // como mucho unos pocos sprites nuevos por frame: al entrar en un escenario no hay tirón
-    if (sprBudget <= 0 || sw < 1 || sh < 1 || sw * sh > 200 * 200) return null;
-    sprBudget--; sprNew++;
-    const r = analyzeSprite(img, sx, sy, sw, sh);
-    byRect.set(key, r);
-    return r;
+    if (d !== undefined) return d; // (false: en la cola, todavía sin analizar)
+    // Nada se analiza dentro del frame: al moverse entraban decenas de sprites nuevos de golpe
+    // y cada lectura de píxeles era un tirón. Va a una cola que se vacía en los ratos libres,
+    // como mucho ~3 ms seguidos; hasta entonces ese sprite sale sin sombra (un instante).
+    byRect.set(key, false);
+    if (sw < 1 || sh < 1 || sw * sh > 200 * 200 || sx !== Math.floor(sx) || sy !== Math.floor(sy)) { byRect.set(key, null); return null; }
+    sprQueue.push([img, sx, sy, sw, sh, byRect, key]);
+    if (!sprQueued) { sprQueued = true; idle(runAnalysis); }
+    return false;
+  }
+  const sprQueue = []; let sprQueued = false;
+  const idle = fn => window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 150 }) : setTimeout(fn, 16);
+  function runAnalysis() {
+    sprQueued = false;
+    const t0 = performance.now();
+    try {
+      while (sprQueue.length && performance.now() - t0 < 3) {
+        const [img, sx, sy, sw, sh, byRect, key] = sprQueue.shift();
+        byRect.set(key, analyzeSprite(img, sx, sy, sw, sh)); sprNew++;
+      }
+    } catch (e) { fail(e); }
+    const dt = performance.now() - t0; stats.anaMs = (stats.anaMs || 0) + dt; stats.anaMax = Math.max(stats.anaMax || 0, dt);
+    if (sprQueue.length) { sprQueued = true; idle(runAnalysis); }
   }
   function sprBegin() {
     const w = game.width, h = game.height, hw = w >> 1, hh = h >> 1;
@@ -1340,7 +1430,7 @@
     // la luz casi de lado la silueta se aplastaría en una raya: los objetos tienen fondo.
     const md = shown.moonDir, ml = Math.hypot(md[0], md[1]) || 1;
     moonOx = -md[0] / ml * .9; moonOy = Math.max(.3, md[1] / ml * .9);
-    sprBudget = 24; sprOn = tune.spr;
+    sprOn = tune.spr;
   }
   function sprDraw(c, img, sx, sy, sw, sh, dx, dy, dw, dh) {
     const t0 = performance.now();
@@ -1407,39 +1497,16 @@
     h = Math.imul(h ^ (h >>> 13), 1274126177);
     return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
   }
-  // ---------- verde típico de la hierba del mapa ----------
-  // El suelo llega en trozos de 256×256 ya pintados. De cada trozo nuevo se saca la proporción
-  // verde/rojo de sus píxeles verdes; la mediana es la hierba del mapa. El pantano es verde
-  // también, pero bastante más saturado: así la decoración no crece dentro del agua.
-  // Se cuenta sólo con los trozos pintados en el frame actual: al cambiar de escenario cada
-  // 4 minutos la hierba cambia de color y lo aprendido del escenario anterior no vale.
-  const chunkBins = new WeakMap();                 // trozo → histograma de verde/rojo
+  // ---------- suelo de este frame ----------
+  // El suelo llega en trozos de 256×256 ya pintados. Aquí sólo se cuentan (un frame sin trozos
+  // no es el mundo: un menú). Qué escenario es y el verde de la hierba los calcula la GPU
+  // (floorStats), que antes se sacaban leyendo los píxeles de cada trozo nuevo.
   const frameBins = new Float64Array(160);         // verde/rojo de 0,8 a 2,4 en pasos de 0,01
   let binsFrame = -1, grassRatio = 1.25, frameChunks = 0;
-  const frameFloor = new Float64Array(BIOMES.length); // píxeles de suelo de cada escenario en este frame
-  function chunkRatio(img) {
-    let info = chunkBins.get(img);
-    if (!info) {
-      info = { bins: new Uint32Array(160), floor: new Uint32Array(BIOMES.length) };
-      chunkBins.set(img, info);
-      let d;
-      try { d = img.getContext('2d').getImageData(0, 0, img.width, img.height).data; } catch (e) { return; }
-      for (let i = 0; i < d.length; i += 16) {
-        const r = d[i], g = d[i + 1], b = d[i + 2];
-        if (g > r && g > b && r > 8) { const k = Math.round((g / r - .8) * 100); if (k >= 0 && k < 160) info.bins[k]++; }
-        const c = (r << 16) | (g << 8) | b;
-        for (let s = 0; s < FLOOR_RGB.length; s++) if (FLOOR_RGB[s].includes(c)) { info.floor[s]++; break; }
-      }
-    }
-    const bins = info.bins;
-    if (binsFrame !== frameId) { frameBins.fill(0); frameFloor.fill(0); frameChunks = 0; binsFrame = frameId; }
+  const frameFloor = new Float64Array(BIOMES.length); // suelo de cada escenario en pantalla (última lectura)
+  function chunkRatio() {
+    if (binsFrame !== frameId) { frameChunks = 0; binsFrame = frameId; }
     frameChunks++;
-    for (let s = 0; s < BIOMES.length; s++) frameFloor[s] += info.floor[s];
-    for (let k = 0; k < 160; k++) frameBins[k] += bins[k];
-    let tot = 0; for (let k = 0; k < 160; k++) tot += frameBins[k];
-    if (!tot) return;
-    let acc = 0;
-    for (let k = 0; k < 160; k++) { acc += frameBins[k]; if (acc >= tot / 2) { grassRatio = .8 + k / 100; break; } }
   }
 
   C2.drawImage = function (img, dx, dy, dw, dh) {
