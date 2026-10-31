@@ -401,6 +401,8 @@
     uniform vec2 res,cam,moonDir,center; uniform float art,aspect,time,dbg,quality;
     uniform vec3 ambient,moon,torch,fogCol,lowTint,highTint,shadowHue;
     uniform float torchR,gi,bloom,shadowK,relief,exposure,vignette,sat,fog,shafts,motes,ao,rim;
+    // luces puntuales (capa de sprites): xy en pantalla, radio (en alturas de pantalla), fuerza; y su color
+    uniform vec4 lp[16]; uniform vec3 lc[16]; uniform float nLights;
     // toque de cada escenario (ver BIOMES en el JS)
     uniform vec3 liqA,liqB,liqFx,moteCol,flashCol; uniform vec4 bFx,bFx2,bLiq,moteP; uniform float flash;
     uniform vec4 rift; uniform float riftA; // grieta: centro y semiejes en píxeles (y de GL), opacidad
@@ -593,7 +595,21 @@
       float rimM=max(dot(en,moonDir),0.)*.35*moonVis;
       vec3 rimL=(torch*rimT+moon*rimM+g*.6)*smoothstep(.05,.5,el)*occ*rim;
 
-      vec3 light=ambient*aoF*(.7+.3*moonVis)
+      // Luces puntuales: cada fuego, proyectil encendido o cosa que brilla es una luz de verdad,
+      // un poco por encima del suelo. Cae con la distancia como una luz real (cuadrado inverso,
+      // suavizado) y a los sprites los ilumina por el lado que mira hacia ella (su normal).
+      vec3 pl=vec3(0.);
+      for(int i=0;i<16;i++){
+        if(float(i)>=nLights)break;
+        vec4 L=lp[i];
+        vec2 d=(L.xy-uv)*vec2(aspect,1.);
+        float r=L.z, dist=length(d);
+        vec3 Ld=normalize(vec3(d,r*.35));
+        float fall=1./(1.+dist*dist/(r*r)*2.)*(1.-smoothstep(r*1.6,r*3.,dist));
+        float fl=1.+bFx.w*.25*sin(time*(9.+float(i)*1.7)+float(i)*4.1)*sin(time*5.3+float(i));
+        pl+=lc[i]*L.w*fall*fl*mix(.4+.6*max(dot(n,Ld),0.),max(dot(n,Ld),0.)*1.2,onSpr);
+      }
+      vec3 light=ambient*aoF*(.7+.3*moonVis)+pl
                 +moon*ndl*moonVis*1.2
                 +torch*att*tdl*torchVis
                 +g*aoF+rimL
@@ -830,6 +846,22 @@
     else { slowSince = 0; fastSince = 0; }
   }
 
+  // las 16 luces más fuertes del frame, en coordenadas del shader (y hacia arriba, radio en alturas de pantalla)
+  const lpBuf = new Float32Array(64), lcBuf = new Float32Array(48), lIdx = [];
+  function setLights(u, w, h) {
+    const n = lights.length / 7;
+    lIdx.length = 0; for (let i = 0; i < n; i++) lIdx.push(i);
+    lIdx.sort((a, b) => lights[b * 7 + 3] - lights[a * 7 + 3]);
+    const k = Math.min(16, n);
+    stats.luces = n;
+    for (let j = 0; j < k; j++) {
+      const i = lIdx[j] * 7;
+      lpBuf.set([lights[i] / w, 1 - lights[i + 1] / h, lights[i + 2] / h, lights[i + 3]], j * 4);
+      lcBuf.set([lights[i + 4], lights[i + 5], lights[i + 6]], j * 3);
+    }
+    if (u['lp[0]']) { gl.uniform4fv(u['lp[0]'], lpBuf); gl.uniform3fv(u['lc[0]'], lcBuf); }
+    gl.uniform1f(u.nLights, tune.lights ? k : 0);
+  }
   let artScale = 2.5, camE = 0, camF = 0, prevE = 0, prevF = 0, debug = 0, frame = 0, histFlip = false;
   function render(now) {
     const w = game.width, h = game.height;
@@ -986,6 +1018,7 @@
       gl.uniform1f(u.riftA, rOn ? rift.a : 0);
       gl.uniform4f(u.moteP, bio.moteDen, bio.moteRise, bio.moteBlink, bio.moteSize);
       gl.uniform1f(u.flash, flash);
+      setLights(u, w, h);
     });
     if (fresh) fresh--;
     meterExposure(now, aOut);
@@ -1032,7 +1065,7 @@
   let onFrame = null; // gancho de pruebas: se llama con el frame ya pintado (aún legible)
   // jmode 2: ruido anclado al mundo (no titila al mover la cámara). Medido con _test/flicker.js:
   // la mezcla temporal deja el parpadeo de las sombras en movimiento entre 2 y 4 veces más bajo.
-  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true };
+  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true };
 
   function snap(t) {
     gl.bindTexture(gl.TEXTURE_2D, t);
@@ -1185,7 +1218,7 @@
   // Cada sprite que el juego pinta sobre el suelo (Pokémon, árboles, rocas, hierba, objetos) se
   // repite aquí, con su misma transformación, en tres capas:
   //  · normales (rg: hacia dónde mira cada píxel; b: altura sobre el pie; a: hay sprite), a
-  //    resolución completa. La normal sale de inflar la silueta (bordes redondeados) y de su
+  //    media resolución (a completa costaba subirla a la GPU cada frame y no se notaba). La normal sale de inflar la silueta (bordes redondeados) y de su
   //    propio sombreado pintado, como hacen SpriteIlluminator o Laigter con los sprites 2D.
   //  · sombra de la luna y sombra de la antorcha, a media resolución: la silueta del sprite
   //    aplastada e inclinada desde sus pies. Es una transformación afín (cada punto se desplaza
@@ -1204,7 +1237,26 @@
   const blobGrad = sm.createRadialGradient(0, 0, 0, 0, 0, 1);
   blobGrad.addColorStop(0, 'rgb(0,0,170)'); blobGrad.addColorStop(.55, 'rgb(0,0,110)'); blobGrad.addColorStop(1, 'rgb(0,0,0)');
   const sprInfo = new WeakMap(); // imagen → Map(recorte → datos del sprite, o null si está vacío)
-  let sprBudget = 0, sprOn = false, moonOx = .5, moonOy = .75, sprT = 0, sprCount = 0;
+  let sprBudget = 0, sprOn = false, moonOx = .5, moonOy = .75, sprT = 0, sprCount = 0, sprNew = 0;
+  const blobs = []; // manchas de contacto del frame: escala x, escala y, centro x, centro y
+  const lights = []; // luces puntuales del frame: [x, y, radio, fuerza, r, g, b] en píxeles de pantalla
+  // Un sprite que brilla (llamas, brasas, gemas) se convierte en una luz puntual en el centro de
+  // lo que brilla, de su color. El jugador no: ya lleva su propia luz.
+  function sprLight(m, d, dx, dy, kx, ky, ga) {
+    if (!d.ecol || d.emit < .1) return;
+    const lx = dx + d.ecx * kx, ly = dy + d.ecy * ky;
+    const x = m.a * lx + m.c * ly + m.e, y = m.b * lx + m.d * ly + m.f;
+    if (Math.hypot(x - game.width * .5, y - game.height * .48) < artScale * 12) return;
+    const size = Math.max(d.fr - d.fl + 1, d.foot - d.top + 1) * Math.max(kx, ky) * Math.hypot(m.a, m.b);
+    const mx = Math.max(...d.ecol, .01);
+    lights.push(x, y, Math.max(50, Math.min(220, size * 2)), Math.min(.9, d.emit * 2.5) * ga, d.ecol[0] / mx, d.ecol[1] / mx, d.ecol[2] / mx);
+  }
+  // proyectiles y efectos centrados (girados): sólo su luz, ni sombra ni normales
+  function sprLightOnly(c, img, dx, dy, dw, dh) {
+    if (!(img instanceof HTMLCanvasElement || img instanceof HTMLImageElement) || dw <= 0 || dh <= 0) return;
+    const d = spriteData(img, 0, 0, img.width, img.height); if (!d) return;
+    sprLight(c.getTransform(), d, dx, dy, dw / img.width, dh / img.height, Math.min(1, c.globalAlpha));
+  }
 
   // Lee el sprite una sola vez: pie (fila opaca más baja), ancho del pie, silueta y normales.
   function analyzeSprite(img, sx, sy, sw, sh) {
@@ -1232,6 +1284,17 @@
       const t = Math.min(D[i], R) / R;
       Z[i] = R * Math.sqrt(1 - (1 - t) * (1 - t)) + (.299 * px[i * 4] + .587 * px[i * 4 + 1] + .114 * px[i * 4 + 2]) / 255 * 1.2;
     }
+    // ¿brilla? (lo muy claro y saturado: llamas, brasas, gemas). Fracción, color y centro de lo que brilla
+    const sst = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+    let ew = 0, er = 0, eg = 0, eb = 0, ex = 0, ey = 0, opaque = 0;
+    for (let i = 0; i < n; i++) if (A[i]) {
+      opaque++;
+      const r = px[i * 4] / 255, g = px[i * 4 + 1] / 255, b = px[i * 4 + 2] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      const w = sst(.8, .97, mx) * sst(.45, .7, mx - mn);
+      if (w > 0) { ew += w; er += r * w; eg += g * w; eb += b * w; ex += (i % sw) * w; ey += ((i / sw) | 0) * w; }
+    }
+    const emit = ew / Math.max(1, opaque);
+    const ecol = ew > 0 ? [er / ew, eg / ew, eb / ew] : null, ecx = ew > 0 ? ex / ew + .5 : 0, ecy = ew > 0 ? ey / ew + .5 : 0;
     const z = (k, y) => (k < 0 || y < 0 || k >= sw || y >= sh) ? 0 : Z[y * sw + k];
     const nrm = document.createElement('canvas'), sil = document.createElement('canvas');
     nrm.width = sil.width = sw; nrm.height = sil.height = sh;
@@ -1246,7 +1309,7 @@
       Sd[i * 4] = 255; Sd[i * 4 + 1] = hgt; Sd[i * 4 + 3] = 255;
     }
     nrm.getContext('2d').putImageData(ni, 0, 0); sil.getContext('2d').putImageData(si, 0, 0);
-    return { foot, top, fl, fr, nrm, sil };
+    return { foot, top, fl, fr, nrm, sil, emit, ecol, ecx, ecy };
   }
   function spriteData(img, sx, sy, sw, sh) {
     let byRect = sprInfo.get(img);
@@ -1256,27 +1319,28 @@
     if (d !== undefined) return d;
     // como mucho unos pocos sprites nuevos por frame: al entrar en un escenario no hay tirón
     if (sprBudget <= 0 || sw < 1 || sh < 1 || sw * sh > 200 * 200) return null;
-    sprBudget--;
+    sprBudget--; sprNew++;
     const r = analyzeSprite(img, sx, sy, sw, sh);
     byRect.set(key, r);
     return r;
   }
   function sprBegin() {
     const w = game.width, h = game.height, hw = w >> 1, hh = h >> 1;
-    for (const [c2, x2, W, H] of [[smCv, sm, hw, hh], [stCv, st, hw, hh], [nbCv, nbx, w, h]]) {
+    for (const [c2, x2, W, H] of [[smCv, sm, hw, hh], [stCv, st, hw, hh], [nbCv, nbx, hw, hh]]) {
       if (c2.width !== W || c2.height !== H) { c2.width = W; c2.height = H; }
       x2.setTransform(1, 0, 0, 1, 0, 0); x2.globalAlpha = 1; x2.globalCompositeOperation = 'source-over';
       x2.imageSmoothingEnabled = false;
     }
     sm.fillStyle = st.fillStyle = '#000'; sm.fillRect(0, 0, hw, hh); st.fillRect(0, 0, hw, hh);
-    nbx.clearRect(0, 0, w, h);
-    // en las sombras, cada canal se queda con el máximo (la sombra más alta, la mancha más oscura)
-    sm.globalCompositeOperation = st.globalCompositeOperation = 'lighten';
+    nbx.clearRect(0, 0, hw, hh);
+    // Las siluetas se pintan una encima de otra (la última manda en la altura). Un modo de mezcla
+    // como «lighten» obliga al canvas a leer lo ya pintado en cada dibujo y costaba un 25 % de fps.
+    blobs.length = 0; lights.length = 0;
     // dirección de la sombra de la luna en el canvas (y hacia abajo), 0,9 veces la altura. Con
     // la luz casi de lado la silueta se aplastaría en una raya: los objetos tienen fondo.
     const md = shown.moonDir, ml = Math.hypot(md[0], md[1]) || 1;
     moonOx = -md[0] / ml * .9; moonOy = Math.max(.3, md[1] / ml * .9);
-    sprBudget = 24; sprOn = true;
+    sprBudget = 24; sprOn = tune.spr;
   }
   function sprDraw(c, img, sx, sy, sw, sh, dx, dy, dw, dh) {
     const t0 = performance.now();
@@ -1287,7 +1351,8 @@
     if (m.b || m.c || m.a <= 0 || m.d <= 0 || dw <= 0 || dh <= 0) return;
     const d = spriteData(img, sx, sy, sw, sh); if (!d) return;
     const ga = Math.min(1, c.globalAlpha), kx = dw / sw, ky = dh / sh;
-    if (ga > .9) { nbx.setTransform(m.a, 0, 0, m.d, m.e, m.f); _draw.call(nbx, d.nrm, 0, 0, sw, sh, dx, dy, dw, dh); }
+    if (tune.nb && ga > .9) { nbx.setTransform(m.a * .5, 0, 0, m.d * .5, m.e * .5, m.f * .5); _draw.call(nbx, d.nrm, 0, 0, sw, sh, dx, dy, dw, dh); }
+    sprLight(m, d, dx, dy, kx, ky, ga);
     const Fy = dy + (d.foot + 1) * ky, Fx = dx + (d.fl + d.fr + 1) * .5 * kx; // pie, en unidades del juego
     const a = m.a * .5, dd = m.d * .5, e = m.e * .5, f = m.f * .5;          // a media resolución
     // (x, y) → (x + ox·(Fy − y), Fy + oy·(Fy − y)): el pie se queda, lo alto se aleja
@@ -1307,20 +1372,26 @@
       cast(st, vx / dP * k, Math.max(Math.abs(vy / dP * k), .3 * k) * (vy < 0 ? -1 : 1), ga * Math.min(1, (dP - near) / (artScale * 6)));
     }
     // mancha de contacto al pie (lo que se apoya en el suelo lo oscurece justo debajo)
-    if (sw >= 6 && ga > .5) {
+    // (se apuntan y se pintan todas al final, sumadas en el canal azul: una silueta pintada
+    // después las borraría)
+    if (tune.blob && sw >= 6 && ga > .5) {
       const rx = Math.max(1.5, (d.fr - d.fl + 1) * .5 * kx * 1.15), ry = rx * .38;
-      sm.setTransform(a * rx, 0, 0, dd * ry, a * Fx + e, dd * (Fy - ry * .2) + f);
-      sm.globalAlpha = 1; sm.fillStyle = blobGrad; sm.fillRect(-1, -1, 2, 2);
+      blobs.push(a * rx, dd * ry, a * Fx + e, dd * (Fy - ry * .2) + f);
     }
   }
   function spriteUpload() {
     const t0 = performance.now();
-    for (const [t, c2] of [[texSM, smCv], [texST, stCv], [texNB, nbCv]]) {
+    if (blobs.length) {
+      sm.globalCompositeOperation = 'lighter'; sm.globalAlpha = 1; sm.fillStyle = blobGrad;
+      for (let i = 0; i < blobs.length; i += 4) { sm.setTransform(blobs[i], 0, 0, blobs[i + 1], blobs[i + 2], blobs[i + 3]); sm.fillRect(-1, -1, 2, 2); }
+      sm.globalCompositeOperation = 'source-over'; blobs.length = 0;
+    }
+    if (tune.up !== false) for (const [t, c2] of [[texSM, smCv], [texST, stCv], [texNB, nbCv]]) {
       gl.bindTexture(gl.TEXTURE_2D, t);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c2);
     }
     sprT += performance.now() - t0;
-    stats.sprMs = stats.sprMs * .9 + sprT * .1; stats.sprN = sprCount; sprT = 0; sprCount = 0;
+    stats.sprMs = stats.sprMs * .9 + sprT * .1; stats.sprN = sprCount; stats.sprNew = (stats.sprNew || 0) + sprNew; sprNew = 0; sprT = 0; sprCount = 0;
   }
 
   // ---------- variantes de árboles, árboles secos, cristales, rocas y hierba alta ----------
@@ -1382,6 +1453,7 @@
       fxT(this.getTransform()); _draw.apply(fx, arguments);
       atk.globalAlpha = Math.min(1, this.globalAlpha); _draw.apply(atk, arguments);
     }
+    if (sprOn && centred && this === ctx && phase === 2) try { sprLightOnly(this, img, dx, dy, dw, dh); } catch (e) { fail(e); }
     // la grieta: el juego pinta su sprite (propSprite 'rift', 30×46, 4 fotogramas); se apunta
     // dónde queda en pantalla para que el shader le ponga su vórtice, su núcleo y su luz
     if (this === ctx && phase === 2 && arguments.length === 5 && img instanceof HTMLCanvasElement && img.width === 30 && img.height === 46) {

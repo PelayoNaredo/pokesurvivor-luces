@@ -84,6 +84,8 @@ On the extensions page, click **Remove** on the extension's card. You can then d
   touches the ground.
 - **Volume on sprites:** every sprite gets a normal map generated from its silhouette and
   shading, so light wraps around it instead of just brightening it.
+- **Real point lights:** anything that glows (fire attacks, embers, gems) becomes a light
+  that falls off with distance like a real one and lights each sprite on the side facing it.
 - **Global illumination:** fires, pumpkins, lava, crystals and attacks light up their
   surroundings in their own colour.
 - **Soft fog with light shafts**, floating particles and rim light on characters.
