@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "PokéSurvivor · Luces y sombras",
+  "short_name": "PS Luces",
+  "version": "1.0.0",
+  "description": "Iluminación en tiempo real para PokéSurvivor: sombras, luz global, niebla, agua, ambientes por escenario y variantes de árboles, rocas y hierba.",
+  "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "action": {
+    "default_title": "Luces y sombras",
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icons/16.png", "32": "icons/32.png" }
+  },
+  "permissions": ["storage", "activeTab"],
+  "content_scripts": [
+    {
+      "matches": ["https://pokesurvivor.com/*", "https://www.pokesurvivor.com/*"],
+      "js": ["props.js", "lighting.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://pokesurvivor.com/*", "https://www.pokesurvivor.com/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

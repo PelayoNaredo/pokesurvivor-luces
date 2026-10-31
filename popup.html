@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Luces y sombras</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="box">
+    <header class="head">
+      <img class="logo-ico" src="icons/48.png" alt="" width="40" height="40">
+      <div>
+        <p class="kicker">PokéSurvivor</p>
+        <h1 class="title">Luces y sombras</h1>
+      </div>
+    </header>
+
+    <p class="status" id="status" data-state="unknown">
+      <i aria-hidden="true"></i><span id="status-text">Comprobando…</span>
+      <button class="open" id="open" type="button" hidden>Abrir el juego</button>
+    </p>
+
+    <h2 class="sec">Ambiente</h2>
+    <div class="scenes" role="radiogroup" aria-label="Ambiente">
+
+      <label class="scene" data-mode="noche">
+        <input type="radio" name="mode" value="noche">
+        <svg viewBox="0 0 48 22" aria-hidden="true" shape-rendering="crispEdges">
+          <rect width="48" height="22" fill="#0b1838"/><rect y="5" width="48" height="5" fill="#13265a"/><rect y="10" width="48" height="4" fill="#1a3170"/>
+          <g class="stars" fill="#f4f8ff"><rect x="5" y="3" width="1" height="1"/><rect x="14" y="6" width="1" height="1"/><rect x="25" y="2" width="1" height="1"/><rect x="31" y="7" width="1" height="1"/><rect x="43" y="4" width="1" height="1"/></g>
+          <g fill="#fff4d6"><rect x="36" y="2" width="3" height="1"/><rect x="35" y="3" width="2" height="4"/><rect x="36" y="7" width="3" height="1"/></g>
+          <circle class="glow" cx="22" cy="17" r="9" fill="url(#gNight)"/>
+          <rect y="14" width="48" height="8" fill="#1f3a1c"/><rect y="14" width="48" height="1" fill="#2c4f24"/>
+          <g fill="#122611"><rect x="6" y="9" width="5" height="4"/><rect x="5" y="10" width="7" height="3"/><rect x="8" y="13" width="1" height="2"/></g>
+          <rect x="21" y="13" width="2" height="3" fill="#ffd8a0"/><rect x="22" y="16" width="5" height="1" fill="#0d1a0c" opacity=".6"/>
+          <defs><radialGradient id="gNight"><stop offset="0" stop-color="#ffb34d" stop-opacity=".55"/><stop offset="1" stop-color="#ffb34d" stop-opacity="0"/></radialGradient></defs>
+        </svg>
+        <span class="name">Noche</span>
+      </label>
+
+      <label class="scene" data-mode="atardecer">
+        <input type="radio" name="mode" value="atardecer">
+        <svg viewBox="0 0 48 22" aria-hidden="true" shape-rendering="crispEdges">
+          <rect width="48" height="22" fill="#3d2b6b"/><rect y="4" width="48" height="4" fill="#7a3f86"/><rect y="8" width="48" height="3" fill="#c4537a"/><rect y="11" width="48" height="3" fill="#ff8a4d"/>
+          <g fill="#ffd23f"><rect x="31" y="9" width="6" height="1"/><rect x="30" y="10" width="8" height="4"/></g>
+          <rect y="14" width="48" height="8" fill="#4a3a2a"/><rect y="14" width="48" height="1" fill="#6b4a2a"/>
+          <g fill="#2a1f2a"><rect x="8" y="9" width="5" height="4"/><rect x="7" y="10" width="7" height="3"/><rect x="10" y="13" width="1" height="2"/></g>
+          <rect x="0" y="15" width="10" height="1" fill="#1e1424" opacity=".7"/>
+          <rect x="21" y="13" width="2" height="3" fill="#ffd8a0"/><rect x="10" y="16" width="11" height="1" fill="#1e1424" opacity=".6"/>
+        </svg>
+        <span class="name">Atardecer</span>
+      </label>
+
+      <label class="scene" data-mode="dia">
+        <input type="radio" name="mode" value="dia">
+        <svg viewBox="0 0 48 22" aria-hidden="true" shape-rendering="crispEdges">
+          <rect width="48" height="22" fill="#9fd4ff"/><rect y="7" width="48" height="7" fill="#c8e8ff"/>
+          <g class="sun" fill="#ffe37a"><rect x="37" y="2" width="4" height="4"/><rect x="38" y="1" width="2" height="6"/><rect x="36" y="3" width="6" height="2"/></g>
+          <g fill="#ffffff"><rect x="8" y="4" width="6" height="2"/><rect x="10" y="3" width="3" height="1"/><rect x="22" y="6" width="5" height="1"/></g>
+          <rect y="14" width="48" height="8" fill="#4c9a3f"/><rect y="14" width="48" height="1" fill="#7cc45a"/>
+          <g fill="#2f7535"><rect x="6" y="9" width="5" height="4"/><rect x="5" y="10" width="7" height="3"/></g><rect x="8" y="13" width="1" height="2" fill="#5b3b22"/>
+          <rect x="9" y="15" width="5" height="1" fill="#2f6b2c"/>
+          <rect x="21" y="13" width="2" height="3" fill="#fff4d6"/><rect x="23" y="16" width="3" height="1" fill="#2f6b2c"/>
+        </svg>
+        <span class="name">Día</span>
+      </label>
+
+      <label class="scene" data-mode="off">
+        <input type="radio" name="mode" value="off">
+        <svg viewBox="0 0 48 22" aria-hidden="true" shape-rendering="crispEdges">
+          <rect width="48" height="22" fill="#2a3322"/>
+          <rect y="14" width="48" height="8" fill="#34402a"/>
+          <g fill="#3e5428"><rect x="6" y="9" width="5" height="4"/><rect x="5" y="10" width="7" height="3"/><rect x="8" y="13" width="1" height="2"/></g>
+          <rect x="21" y="13" width="2" height="3" fill="#b9cbf0"/>
+          <g fill="#b9cbf0" opacity=".9"><rect x="37" y="2" width="1" height="5"/><rect x="35" y="4" width="1" height="1"/><rect x="39" y="4" width="1" height="1"/><rect x="34" y="5" width="1" height="4"/><rect x="40" y="5" width="1" height="4"/><rect x="35" y="9" width="1" height="1"/><rect x="39" y="9" width="1" height="1"/><rect x="36" y="10" width="3" height="1"/></g>
+        </svg>
+        <span class="name">Original</span>
+      </label>
+    </div>
+
+    <h2 class="sec">Detalles</h2>
+    <label class="opt">
+      <span class="txt"><b>Variantes</b><small>Árboles, rocas y hierba con formas distintas</small></span>
+      <input type="checkbox" id="variantes" class="sw">
+    </label>
+    <label class="opt">
+      <span class="txt"><b>Decoración</b><small>Flores, matas y piedras por el suelo</small></span>
+      <input type="checkbox" id="deco" class="sw">
+    </label>
+
+    <footer class="foot">
+      <span>Cambia de ambiente en partida con <kbd>L</kbd></span>
+      <span class="fan">Proyecto de fan · no oficial</span>
+    </footer>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
