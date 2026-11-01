@@ -152,7 +152,7 @@ if (!window.__psLuzCtx) {
     ['ice', '#b8cfe0', '#9fd8f0', 'ice', 'nieve', { tint: [.8, .9, 1.12], fogCol: [.1, .14, .22], fogMul: .7 }],
     ['poison', '#46384f', '#9a4fc0', 'poison', 'esporas', { tint: [.96, .9, 1.08], fogCol: [.1, .05, .14] }],
     ['ground', '#b08a52', '#9a7a48', 'swamp', 'polvo', { tint: [1.06, .98, .86], fogCol: [.18, .13, .08], fogMul: 1 }],
-    ['flying', '#9fb8d8', '#7fb8ff', 'water', 'plumas', { tint: [.92, .98, 1.1], fogCol: [.12, .15, .22], fogMul: .8, canopy: .35 }],
+    ['flying', '#9fb8d8', '#7fb8ff', 'water', 'plumas', { tint: [.9, .95, 1.06], fogCol: [.1, .12, .18], fogMul: .35, canopy: .35 }],
     ['psychic', '#5e4470', '#8a5ad0', 'water', 'destellos', { tint: [1.02, .92, 1.1], fogCol: [.12, .06, .16], liqGlow: .4 }],
     ['bug', '#5a6a2a', '#6a7a2a', 'swamp', 'luciernagas', { tint: [1, 1.04, .9], canopy: .6 }],
     ['rock', '#7a6a58', '#4f8fd0', 'water', 'polvo', { tint: [1.04, .98, .9], fogCol: [.15, .12, .09], fogMul: 1.2 }],
@@ -576,7 +576,7 @@ if (!window.__psLuzCtx) {
       float wd=fbm(wp*.02+vec2(time*.4,time*.05));
       // la niebla del clima se cierra con la distancia: cerca del jugador se ve, lejos no
       float far=smoothstep(.12,.55,length((uv-center)*vec2(aspect,1.)));
-      dens=dens*(1.+wfog*1.2+wx.w+wx.x*.3)+wfog*(.1+.4*far)+wx.w*(.15+.35*smoothstep(.15,.85,wd))+wx.x*.05;
+      dens=dens*(1.+wfog*1.2+wx.w+wx.x*.3)+wfog*(.1+.4*far)+wx.w*(.08+.25*smoothstep(.15,.85,wd))+wx.x*.05;
       // haces: de este punto hacia la antorcha y hacia la luna, mirando qué parte está a la sombra
       float sh=0.,sm=0.;
       vec2 vis=texture2D(S,uv).rg;
@@ -611,7 +611,7 @@ if (!window.__psLuzCtx) {
         dens+=heat*lavaK*.35;
       }
       // (con niebla del clima y niebla baja a la vez se tapaba todo: tope)
-      dens=min(dens,.5);
+      dens=min(dens,.5-.2*bk);
       vec3 fc=mix(fogCol,vec3(.62,.48,.3),wx.w)+liqFx*heat*lavaK*2.2;
       vec3 scatter=fc+torch*sh*shafts*.8+moon*sm*.25*shafts*(1.+canopy*1.6)+g*.6+halo*1.4;
       gl_FragColor=vec4(scatter*dens,dens);
@@ -700,12 +700,16 @@ if (!window.__psLuzCtx) {
   // con poca profundidad de campo de una maqueta. El centro, donde está el jugador, queda nítido.
   const FS_TILT = HEAD + `uniform sampler2D T; uniform vec2 px;
     void main(){
-      float k=smoothstep(.16,.5,abs(uv.y-.5));
+      // (más marcado: con 7 píxeles de desenfoque no se notaba; y un poco más de color, como las
+      // fotos de maquetas, que suelen estar saturadas)
+      float k=smoothstep(.08,.42,abs(uv.y-.5));
       vec4 c=texture2D(T,uv);
-      if(k<.01){ gl_FragColor=c; return; }
-      vec4 a=vec4(0.); float r=k*7.;
-      for(int i=0;i<12;i++){ float an=float(i)*2.39996; float rr=sqrt((float(i)+.5)/12.)*r; a+=texture2D(T,uv+vec2(cos(an),sin(an))*rr*px); }
-      gl_FragColor=mix(c,a/12.,smoothstep(0.,.3,k));
+      vec3 cc=mix(vec3(dot(c.rgb,vec3(.299,.587,.114))),c.rgb,1.12);
+      if(k<.01){ gl_FragColor=vec4(cc,1.); return; }
+      vec4 a=vec4(0.); float r=k*18.;
+      for(int i=0;i<16;i++){ float an=float(i)*2.39996; float rr=sqrt((float(i)+.5)/16.)*r; a+=texture2D(T,uv+vec2(cos(an),sin(an))*rr*px); }
+      vec3 bl=a.rgb/16.;
+      gl_FragColor=vec4(mix(cc,mix(vec3(dot(bl,vec3(.299,.587,.114))),bl,1.12),smoothstep(0.,.25,k)),1.);
     }`;
 
   // 6) composición final a resolución completa
@@ -1200,7 +1204,7 @@ if (!window.__psLuzCtx) {
       col*=mix(vec3(1.),vec3(.95,.98,1.05),max(wx.y,snw)*.5); // nieve: luz fría y limpia
       col*=mix(vec3(1.),vec3(1.1,1.03,.88),wx.z*.55);  // sol abrasador: luz blanca y cálida
       col*=mix(vec3(1.),vec3(1.14,.98,.76),wx.w*.75);  // arena: amarillenta y con menos contraste
-      col=mix(col,vec3(.72,.58,.38)*(lum(col)*.6+.25),wx.w*.18*(1.-.5*onSpr)); // (calima: el aire está lleno de polvo)
+      col=mix(col,vec3(.72,.58,.38)*(lum(col)*.6+.25),wx.w*.1*(1.-.5*onSpr)); // (calima: el aire está lleno de polvo)
       // con nieve, las sombras se vuelven azules (el cielo se refleja en la nieve)
       col=mix(col,col*vec3(.82,.9,1.12),snw*shAmt*.6);
       // arena: nubes de polvo que pasan con el viento (bandas largas y deshilachadas, no rayas) y
@@ -1210,7 +1214,7 @@ if (!window.__psLuzCtx) {
         float dust=smoothstep(.3,.8,noise(wq)*.6+noise(wq*2.7+vec2(time*.3,0.))*.4)*wx.w;
         // (sobre los sprites, algo menos: si no, árboles y Pokémon parecían fantasmas)
         // el polvo tapa la luz y tiñe: oscurece hacia el ocre, no lo blanquea todo
-        col=mix(col,col*vec3(.92,.76,.54)+vec3(.06,.04,.02)*(light+.3),dust*.7*(1.-.35*onSpr));
+        col=mix(col,col*vec3(.92,.76,.54)+vec3(.06,.04,.02)*(light+.3),dust*.5*(1.-.35*onSpr));
         // granos: dos capas a distinta velocidad (los cercanos van más rápido)
         for(int k=0;k<2;k++){
           float sp=6.+float(k)*5.;
