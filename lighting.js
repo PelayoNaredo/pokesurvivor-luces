@@ -184,7 +184,7 @@ if (!window.__psLuzCtx) {
     '#34303f': ['#4a4652', '#524e5c', '#423e49', '#7a7684', '#2e2b34', '#28252e', '#141217'],
     '#1f2a2a': ['#2e2838', '#352e40', '#282231', '#584c66', '#0e0b12', '#211c28', '#1c1823', '#0f0d13']
   };
-  const ARENA_WALL = { fire: '#3a2826', water: '#2a4660', grass: '#4a6a36', electric: '#3a3a48', ice: '#7f9fc0', poison: '#33263f',
+  const ARENA_WALL = { normal: '#8a7f6a', fire: '#3a2826', water: '#2a4660', grass: '#4a6a36', electric: '#3a3a48', ice: '#7f9fc0', poison: '#33263f',
     ground: '#8a5e34', flying: '#dfe8f4', psychic: '#3e2a55', bug: '#5e4a26', rock: '#55473a', ghost: '#24202e', dragon: '#24264a',
     dark: '#1c181f', steel: '#465060', fairy: '#7a5a8a', judgment: '#2e2829' };
   for (const b of BIOMES) {
@@ -194,7 +194,12 @@ if (!window.__psLuzCtx) {
       b.wall = w ? [w, tone(w, .07), tone(w, -.07), tone(w, .32), tone(w, -.7), tone(w, -.3), tone(w, -.38), tone(w, -.55)] : [];
     } else b.wall = WALLS_BY_FLOOR[b.floor[0]] || [];
   }
-  const NEUTRAL = { clouds: .2, tint: [1, 1, 1], fogCol: [0, 0, 0], fogMul: 1, moonMul: 1, canopy: 0, lightning: 0, flicker: 0, emit: 1,
+  // niebla a ras de suelo, setas que brillan de noche, aurora (los que no salen aquí: nada)
+  const EXTRA = { 'cementerio': { gfog: .6, glowK: .6 }, 'huerto': { gfog: .45, glowK: .4 }, 'bosque-tenebroso': { gfog: .5, glowK: .9 },
+    'bosque-umbrio': { glowK: .3 }, 'grieta-ghost': { gfog: .5, glowK: .6 }, 'grieta-poison': { gfog: .4, glowK: .5 },
+    'grieta-dark': { glowK: .5 }, 'grieta-ice': { aurora: .8 }, 'cueva-cristal': { aurora: .25 } };
+  for (const b of BIOMES) Object.assign(b, EXTRA[b.id] || {});
+  const NEUTRAL = { gfog: 0, glowK: 0, aurora: 0, clouds: .2, tint: [1, 1, 1], fogCol: [0, 0, 0], fogMul: 1, moonMul: 1, canopy: 0, lightning: 0, flicker: 0, emit: 1,
     liqGlow: 0, caustic: 0, bubbles: 0, spec: 0, moteCol: [.05, .08, .04], moteDen: .56, moteRise: .15, moteBlink: 0, moteSize: 1,
     heat: 0, glitter: 0, vignetteMul: 1, flashCol: [.55, .6, .85], gLow: [1, 1, 1], gHigh: [1, 1, 1] };
   // Firma de cada sitio: gradación (tinte de sombras / de luces), aire que tiembla, escarcha,
@@ -557,6 +562,7 @@ if (!window.__psLuzCtx) {
     uniform vec4 lp[16]; uniform vec3 lc[16]; uniform float nLights;
     uniform vec3 fogCol,torch,moon;
     uniform vec4 wx; uniform float wfog,canopy; // clima (lluvia, nieve, sol, arena), niebla del clima, copas
+    uniform sampler2D LQ; uniform float gfog,lavaK; uniform vec3 liqFx;
     float fbm(vec2 p){float v=0.,a=.5;for(int i=0;i<4;i++){v+=a*noise(p);p=p*2.03+17.1;a*=.5;}return v;}
     float torchAtt(vec2 q){vec2 d=(q-center)*vec2(aspect,1.);float r=length(d)/torchR;return 1./(1.+r*r*4.)*(1.-smoothstep(.15,1.6,r));}
     void main(){
@@ -590,7 +596,23 @@ if (!window.__psLuzCtx) {
         halo+=lc[i]*lp[i].w/(1.+dot(dd,dd)/(r*r)*3.);
       }
       // en el bosque los haces de luna entre las copas se marcan más
-      vec3 fc=mix(fogCol,vec3(.62,.48,.3),wx.w);
+      // niebla a ras de suelo: bancos bajos que se arremolinan despacio y se abren alrededor del jugador
+      if(gfog>0.){
+        vec2 gq=wp*.01+vec2(time*.03+sin(time*.11+wp.y*.004)*.4,time*.012);
+        float gn=smoothstep(.35,.8,fbm(gq)*.75+noise(gq*3.1-vec2(time*.06,0.))*.25);
+        float clear=smoothstep(.03,.13,length((uv-center)*vec2(aspect,1.)));
+        dens+=gfog*gn*clear*.3;
+      }
+      // sobre la lava el aire brilla: una columna de calor que tiñe la niebla de su color
+      float heat=0.;
+      if(lavaK>0.){
+        vec2 up=vec2(0.,.012);
+        heat=(texture2D(LQ,uv).r+texture2D(LQ,uv-up).r+texture2D(LQ,uv-up*2.).r+texture2D(LQ,uv-up*3.5).r)*.25;
+        dens+=heat*lavaK*.35;
+      }
+      // (con niebla del clima y niebla baja a la vez se tapaba todo: tope)
+      dens=min(dens,.5);
+      vec3 fc=mix(fogCol,vec3(.62,.48,.3),wx.w)+liqFx*heat*lavaK*2.2;
       vec3 scatter=fc+torch*sh*shafts*.8+moon*sm*.25*shafts*(1.+canopy*1.6)+g*.6+halo*1.4;
       gl_FragColor=vec4(scatter*dens,dens);
     }`;
@@ -648,17 +670,18 @@ if (!window.__psLuzCtx) {
     }`;
 
   // 5f) muros: 1 donde el suelo es muro o acantilado del escenario actual (por color exacto)
+  // (en g, si es cara frontal o borde: los colores 5.º en adelante de cada paleta lo son)
   const FS_WALLM = HEAD + `uniform sampler2D G; uniform vec2 full; uniform vec3 wc[8]; uniform float nwc;
     void main(){
-      vec3 g=texture2D(G,(floor(uv*full)+.5)/full).rgb; float m=0.;
-      for(int i=0;i<8;i++){ if(float(i)>=nwc)break; m=max(m,step(distance(g,wc[i]),.004)); }
-      gl_FragColor=vec4(m,0.,0.,1.);
+      vec3 g=texture2D(G,(floor(uv*full)+.5)/full).rgb; float m=0., fc=0.;
+      for(int i=0;i<8;i++){ if(float(i)>=nwc)break; float h=step(distance(g,wc[i]),.004); m=max(m,h); if(i>=4) fc=max(fc,h); }
+      gl_FragColor=vec4(m,fc,0.,1.);
     }`;
 
   // 5d) agua y líquidos del escenario: máscara a media resolución (eran 5 lecturas por píxel)
   // Sólo coincidencias casi exactas (la hierba del Huerto está a 0,04 del pantano hondo) y
   // en al menos 2 de 5 muestras: el agua tiene espuma y motas de otros colores.
-  const FS_LIQ = HEAD + `uniform sampler2D G,TRL; uniform vec2 o,full; uniform vec3 liqA,liqB;
+  const FS_LIQ = HEAD + `uniform sampler2D G,TRL,WM; uniform vec2 o,full; uniform vec3 liqA,liqB;
     void main(){
       vec2 c=(floor(uv*full)+.5)/full; // en el centro de un píxel: el color exacto, sin mezclar
       float nl=0.;
@@ -667,7 +690,10 @@ if (!window.__psLuzCtx) {
         vec3 gs=texture2D(G,c+off*o).rgb;
         nl+=1.-smoothstep(.008,.02,min(distance(gs,liqA),distance(gs,liqB)));
       }
-      gl_FragColor=vec4(smoothstep(1.5,2.5,nl),texture2D(TRL,uv).r,0.,1.);
+      // b: muro (.5 cara superior, 1 frontal); a: suelo al pie de una cara frontal (hasta 3 píxeles de arte)
+      vec2 wm=texture2D(WM,uv).rg; float foot=0.;
+      if(wm.r<.5) for(int k=1;k<=3;k++){ if(texture2D(WM,uv+vec2(0.,float(k)*2.*o.y)).g>.5){ foot=1.-float(k-1)/3.; break; } }
+      gl_FragColor=vec4(smoothstep(1.5,2.5,nl),texture2D(TRL,uv).r,wm.r*(.5+.5*wm.g),foot);
     }`;
 
   // 7) efecto maqueta (opcional): desenfoque suave arriba y abajo de la pantalla, como una foto
@@ -691,7 +717,7 @@ if (!window.__psLuzCtx) {
     // luces puntuales (capa de sprites): xy en pantalla, radio (en alturas de pantalla), fuerza; y su color
     uniform vec4 lp[16]; uniform vec3 lc[16]; uniform float nLights;
     // clima (lluvia, nieve, sol abrasador, arena), impactos (centro, edad 0-1, fuerza) y pies en el agua
-    uniform vec4 wx, wx2; uniform vec4 shk[4]; uniform vec4 rp[8]; uniform float nRp, tm;
+    uniform float auroraK,nightK; uniform vec4 wx, wx2; uniform vec4 shk[4]; uniform vec4 rp[8]; uniform float nRp, tm;
     // toque de cada escenario (ver BIOMES en el JS)
     uniform vec3 liqA,liqB,liqFx,moteCol,flashCol; uniform vec4 bFx,bFx2,bLiq,moteP; uniform float flash;
     uniform vec4 rift; uniform float riftA; // grieta: centro y semiejes en píxeles (y de GL), opacidad
@@ -722,6 +748,8 @@ if (!window.__psLuzCtx) {
     }
     // (qué adorno lleva cada celda y el color del suelo en ella lo decide FS_DECOCELL)
     uniform sampler2D DC; uniform vec2 cell0;
+    float decoHalo=0.; // (lo escribe deco: el halo de una seta luminosa)
+    uniform float glowK;
     vec4 deco(vec2 ap){
       if(decoOn<.002||quality<.5)return vec4(0.); // en la calidad más baja, sin adornos
       vec2 cell=floor(ap/14.);
@@ -732,12 +760,14 @@ if (!window.__psLuzCtx) {
       float h2=hash(cell+7.7),h3=hash(cell+3.3),h4=hash(cell+11.1),h5=hash(cell+5.9);
       vec2 org=cell*14.+floor(vec2(h2,h3)*6.);
       vec2 lp=floor(ap)-org;
-      if(lp.x<0.||lp.y<0.||lp.x>7.||lp.y>7.)return vec4(0.);
       vec3 gr=dcell.rgb;
       float grass=step(.75,dcell.a);
       float s;
       if(grass>.5)s=h4<.3?0.:h4<.5?1.:h4<.64?2.:h4<.74?3.:h4<.84?6.:h4<.94?4.:7.;
       else s=h4<.35?4.:h4<.6?5.:h4<.8?6.:1.;
+      // las setas, en los escenarios oscuros, brillan: un halo suave alrededor del sombrero
+      if(s==7.&&glowK>0.){ vec2 dh=ap-(org+vec2(3.5,2.5)); decoHalo=exp(-dot(dh,dh)/14.)*(.75+.25*sin(time*1.3+h5*20.))*smoothstep(h5*.5,h5*.5+.5,decoOn); }
+      if(lp.x<0.||lp.y<0.||lp.x>7.||lp.y>7.)return vec4(0.);
       if(h5<.5)lp.x=7.-lp.x; // espejo
       float t=floor(texture2D(DECO,(vec2(s*8.+lp.x,lp.y)+.5)/vec2(64.,8.)).r*255.+.5);
       if(t<.5)return vec4(0.);
@@ -747,8 +777,8 @@ if (!window.__psLuzCtx) {
       vec3 petal=h5<.25?vec3(.95,.93,.85):h5<.5?vec3(.98,.82,.3):h5<.75?vec3(.95,.55,.7):vec3(.7,.6,.95);
       if(t>3.5&&t<4.5)c=petal;
       if(t>4.5&&t<5.5)c=vec3(.98,.78,.25);
-      if(t>5.5&&t<6.5)c=vec3(.72,.18,.14);
-      if(t>6.5)c=vec3(.95,.9,.84);
+      if(t>5.5&&t<6.5)c=mix(vec3(.72,.18,.14),vec3(.35,.85,1.)*1.3,min(1.,glowK*1.2));
+      if(t>6.5)c=mix(vec3(.95,.9,.84),vec3(.8,1.,1.)*1.4,min(1.,glowK*1.2));
       // cada adorno aparece a su ritmo dentro del fundido general, no todos a la vez
       return vec4(c,smoothstep(h5*.5,h5*.5+.5,decoOn));
     }
@@ -837,7 +867,20 @@ if (!window.__psLuzCtx) {
       vec2 pa=floor(wp*.5); // píxel de arte del mundo
 
       // líquido del escenario: se reconoce por sus colores exactos (los del propio juego; ver FS_LIQ)
-      float liq=texture2D(LQ,uvD).r*(1.-above);
+      vec4 lqv=texture2D(LQ,uvD);
+      float liq=lqv.r*(1.-above);
+      float wallTop=step(.3,lqv.b)*step(lqv.b,.7), wallFace=step(.8,lqv.b);
+      // agua poco profunda junto a la orilla: el fondo se ve deformado por las ondas (refracción)
+      if(liq>.5&&quality>1.5){
+        float sh=1.-min(min(texture2D(LQ,uvD+vec2(6.*o.x,0.)).r,texture2D(LQ,uvD-vec2(6.*o.x,0.)).r),min(texture2D(LQ,uvD+vec2(0.,6.*o.y)).r,texture2D(LQ,uvD-vec2(0.,6.*o.y)).r));
+        if(sh>.01){ vec2 wq=(vec2(uvD.x,1.-uvD.y)*res-cam)/art; vec2 rf=vec2(sin(wq.y*.35+time*1.7),cos(wq.x*.3+time*1.3))*1.5*o*sh; alb=mix(alb,texture2D(W,uvD+rf).rgb,sh); }
+      }
+      // orilla mojada: la tierra junto al agua, más oscura y con algún brillo
+      float shore=0.;
+      if(liq<.5&&bLiq.w>.1){
+        shore=max(max(texture2D(LQ,uvD+vec2(6.*o.x,0.)).r,texture2D(LQ,uvD-vec2(6.*o.x,0.)).r),max(texture2D(LQ,uvD+vec2(0.,6.*o.y)).r,texture2D(LQ,uvD-vec2(0.,6.*o.y)).r))*(1.-above)*(1.-step(.5,texture2D(NB,uv).a));
+        alb*=1.-.28*shore;
+      }
       // Reflejos: desde el agua se sube hasta la orilla (dos muestras seguidas que ya no son
       // agua, por la espuma) y se lee lo que hay a la misma distancia por encima de ella. Si es
       // un objeto (árbol, roca, Pokémon), se ve invertido y ondulado en el agua.
@@ -959,7 +1002,8 @@ if (!window.__psLuzCtx) {
           // se van cerrando según cuaja (con un degradado suave parecía niebla)
           float nz=noise(pa*.07)*.65+noise(pa*.19)*.35;
           float amt=snw*(.55+.6*nz);
-          cover=step(hash(pa*.73+.11)*.5+.25,amt)*gnd*.8;
+          // (el umbral es un ruido a manchas, no por píxel: al fundirse quedaba un grano de sal)
+          cover=step(.2+.5*(noise(pa*.11+.5)*.7+noise(pa*.37+3.1)*.3),amt)*gnd*.8;
           cover*=1.-smoothstep(.15,.6,trl)*.85; // por donde se ha pisado, se ve el suelo
           alb*=1.-trl*.12;
         }
@@ -1003,6 +1047,8 @@ if (!window.__psLuzCtx) {
       aoF*=1.-.5*smoothstep(0.,.8,texture2D(S,uv).b)*(1.-selfE)*(1.-liq);
       // la base de cada sprite se oscurece donde toca el suelo (le da peso: no parece una pegatina)
       aoF*=1.-.32*selfE*(1.-smoothstep(0.,7.,hh));
+      // al pie de los acantilados el suelo queda en penumbra
+      aoF*=1.-.4*lqv.a*(1.-onSpr);
 
       // luz de contorno: borde del sprite que mira a la antorcha / a la luna
       float ex=0.,ey=0.;
@@ -1021,7 +1067,7 @@ if (!window.__psLuzCtx) {
       // Luces puntuales: cada fuego, proyectil encendido o cosa que brilla es una luz de verdad,
       // un poco por encima del suelo. Cae con la distancia como una luz real (cuadrado inverso,
       // suavizado) y a los sprites los ilumina por el lado que mira hacia ella (su normal).
-      vec3 pl=vec3(0.), ps=vec3(0.);
+      vec3 pl=vec3(0.), ps=vec3(0.), bl=vec3(0.);
       // brillo del material, más en lo claro que en lo oscuro del mismo sprite
       float mi=matOf(nb), mb=mi<.5?.1:mi<1.5?.14:mi<2.5?.38:.95;
       float matS=mb*(.35+.65*lum(alb))*onSpr, shin=10.+mb*60.;
@@ -1041,9 +1087,14 @@ if (!window.__psLuzCtx) {
           lsh=1.-min(1.,oc*1.4)*.8;
         }
         pl+=lc[i]*L.w*fall*fl*lsh*mix(.4+.6*max(dot(n,Ld),0.),max(dot(n,Ld),0.)*1.2,onSpr);
+        // hojas y hierba con la luz detrás: el borde que da la espalda a la luz se enciende (la luz
+        // las atraviesa)
+        if(onSpr>.5&&mi<.5) bl+=lc[i]*L.w*fall*max(-dot(normalize(n.xy+1e-4),normalize(Ld.xy+1e-4)),0.)*(1.-n.z);
         if(matS>.01) ps+=lc[i]*L.w*fall*pow(max(dot(n,normalize(Ld+vec3(0.,0.,1.))),0.),shin);
       }
-      vec3 light=ambient*aoF*(.7+.3*moonVis)+pl
+      // (y la luz del jugador: las hojas al otro lado se iluminan a contraluz)
+      if(onSpr>.5&&mi<.5) bl+=torch*att*max(dot(normalize(n.xy+1e-4),normalize(dT+1e-4)),0.)*(1.-n.z)*.8;
+      vec3 light=ambient*aoF*(.7+.3*moonVis)+pl+bl*vec3(.75,1.,.45)*1.6
                 +moon*ndl*moonVis*1.2
                 +torch*att*tdl*torchVis
                 +g*aoF+rimL
@@ -1058,6 +1109,16 @@ if (!window.__psLuzCtx) {
       // Suelo de luz: sombra de luna + sombra de antorcha + oclusión se multiplicaban y, donde
       // coincidían las tres, el suelo se quedaba casi negro. Nunca por debajo del 70 % del ambiente.
       light=max(light,ambient*.7);
+      // acantilados con volumen: lo alto recibe la luna de lleno; la cara frontal, en penumbra
+      light*=1.+wallTop*.25*moonVis-wallFace*.28;
+      light+=moon*moonVis*wallTop*.18;
+      // setas que brillan en la oscuridad y aurora reflejada en el suelo
+      light+=vec3(.3,.85,1.)*decoHalo*glowK*.9;
+      if(auroraK>0.){
+        float ab=smoothstep(.5,.85,noise(vec2(wp.x*.0035+time*.025,wp.y*.0012-time*.008))*.7+noise(vec2(wp.x*.009-time*.03,wp.y*.004))*.3);
+        vec3 ac=mix(vec3(.1,1.,.5),vec3(.45,.35,1.),smoothstep(.55,.9,noise(vec2(wp.x*.002,time*.02))));
+        light+=ac*ab*auroraK*.12*(1.+liq*1.5);
+      }
       // Escalones: la intensidad de la luz salta en pasos (cada uno ~19 % más claro que el
       // anterior), como sombrea un pixel artist, con el borde de cada paso suavizado. Mitad
       // escalonada y mitad continua: del todo escalonada se veían curvas de nivel.
@@ -1132,6 +1193,8 @@ if (!window.__psLuzCtx) {
           col+=liq*ring*.10*(moon*moonVis+torch*att+.1)*step(.5,texture2D(LQ,rp[i].xy).r);
         }
       }
+      // de noche, el agua refleja estrellas que titilan
+      if(liq>.5&&nightK>0.){ float st=step(.9965,hash(pa*.913+.2))*(.4+.6*sin(time*(1.5+hash(pa)*3.)+hash(pa*1.7)*30.)); col+=st*nightK*bLiq.w*moon*moonVis*1.3*(1.-wx.x); }
       // ---- clima sobre la luz ----
       col*=mix(vec3(1.),vec3(.86,.92,1.04),wx.x*.7);   // lluvia: más frío y apagado
       col*=mix(vec3(1.),vec3(.95,.98,1.05),max(wx.y,snw)*.5); // nieve: luz fría y limpia
@@ -1219,6 +1282,12 @@ if (!window.__psLuzCtx) {
       }
 
       // tonemap, sin tonemap encima de los emisores (una calabaza no vira a amarillo)
+      // destellos de lente: una raya horizontal suave en las luces más fuertes
+      if(quality>1.5) for(int i=0;i<4;i++){
+        if(float(i)>=nLights)break;
+        vec2 dd=(uv-lp[i].xy)*vec2(aspect,1.);
+        col+=lc[i]*lp[i].w*exp(-abs(dd.y)*260.)*exp(-abs(dd.x)*9.)*.35;
+      }
       col=tm>.5?agx(col*exposure*(1.-.3*bk)):aces(col*exposure*(1.-.3*bk));
       col=mix(col,alb*(.62+.25*light),bk*.42); // en escenas claras manda más el color del juego
       col=mix(col,alb,em*.85);
@@ -1543,7 +1612,7 @@ if (!window.__psLuzCtx) {
     const center = [0.5, 0.52];
     floorStats(now);
     wxUpdate(Math.min(.1, (now - (render.lastWx || now)) / 1000)); render.lastWx = now;
-    impactsUpdate(now);
+    impactsUpdate(now); gemsUpdate(now);
 
     // escenario: el que más suelo hay en pantalla (última lectura); fundido entre uno y otro
     const dt = Math.min(.1, (now - (render.last || now)) / 1000); render.last = now;
@@ -1606,6 +1675,7 @@ if (!window.__psLuzCtx) {
         gl.uniform2f(u.full, w, h); gl.uniform1f(u.nwc, Math.min(8, wl.length));
         if (u['wc[0]']) gl.uniform3fv(u['wc[0]'], wl.slice(0, 8).flatMap(hex).concat(Array(24).fill(0)).slice(0, 24));
       });
+      if (!wl) { gl.bindFramebuffer(gl.FRAMEBUFFER, T.wm.f); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
       wallsOn = !!wl;
     }
     pass(P.shadow, T.shadow, [['M', T.prep.t], ['SM', texSM], ['ST', texST], ['NB', texNB], ['WM', T.wm.t]], u => {
@@ -1674,12 +1744,14 @@ if (!window.__psLuzCtx) {
     });
     {
       const liq = dom ? dom.liq.map(hex) : [[9, 9, 9], [9, 9, 9]];
-      pass(P.liq, T.liq, [['G', texG], ['TRL', trOut.t]], u => {
+      pass(P.liq, T.liq, [['G', texG], ['TRL', trOut.t], ['WM', T.wm.t]], u => {
         gl.uniform2f(u.o, artScale / w, artScale / h); gl.uniform2f(u.full, w, h);
         gl.uniform3fv(u.liqA, liq[0]); gl.uniform3fv(u.liqB, liq[1]);
       });
     }
-    pass(P.vol, T.vol, [['S', T.shadow.t], ['GI', T.giOut.t], ['EXPO', aOut.t]], u => {
+    pass(P.vol, T.vol, [['S', T.shadow.t], ['GI', T.giOut.t], ['EXPO', aOut.t], ['LQ', T.liq.t]], u => {
+      gl.uniform1f(u.gfog, (bio.gfog + wxCur[1] * .15) * (quality > 1.5 ? 1 : 0)); gl.uniform1f(u.lavaK, quality > 1.5 ? bio.liqGlow : 0);
+      gl.uniform3fv(u.liqFx, dom ? dom.liqFx : [0, 0, 0]);
       gl.uniform2f(u.res, w, h); gl.uniform2f(u.cam, camE, camF);
       gl.uniform2f(u.moonDir, S.moonDir[0], S.moonDir[1]); gl.uniform2f(u.center, center[0], center[1]);
       gl.uniform1f(u.art, artScale); gl.uniform1f(u.aspect, w / h); gl.uniform1f(u.time, (now / 1000) % 3600);
@@ -1700,6 +1772,9 @@ if (!window.__psLuzCtx) {
       if (u['shk[0]']) gl.uniform4fv(u['shk[0]'], shkBuf);
       if (u['rp[0]']) gl.uniform4fv(u['rp[0]'], rpBuf);
       gl.uniform1f(u.nRp, nRp); gl.uniform1f(u.tm, tune.tm);
+      gl.uniform1f(u.glowK, mode === 'noche' ? bio.glowK : bio.glowK * .25);
+      gl.uniform1f(u.auroraK, (bio.aurora + wxCur[3] * .3) * (mode === 'dia' ? .3 : 1));
+      gl.uniform1f(u.nightK, mode === 'noche' ? 1 : 0);
       gl.uniform1f(u.wind, calm || !tune.sway ? 0 : .8 + wxCur[1] * .5 + wxCur[2] * .9);
       gl.uniform1f(u.pixK, tune.pix ? 1 : 0); gl.uniform1f(u.bandK, tune.bands); gl.uniform1f(u.clouds, calm ? bio.clouds * .5 : bio.clouds);
       gl.uniform2f(u.cell0, cell0[0], cell0[1]);
@@ -1866,7 +1941,7 @@ if (!window.__psLuzCtx) {
     _restore.call(c);
     texts.length = 0;
   }
-  C2.fillText = function () { if (this === ctx && phase === 2 && lit()) { deferText(this, _fillText, [...arguments]); return; } return _fillText.apply(this, arguments); };
+  C2.fillText = function () { if (this === ctx && phase === 3) try { noteHudText(String(arguments[0])); } catch (e) {} if (this === ctx && phase === 2 && lit()) { deferText(this, _fillText, [...arguments]); return; } return _fillText.apply(this, arguments); };
   C2.strokeText = function () { if (this === ctx && phase === 2 && lit()) { deferText(this, _strokeText, [...arguments]); return; } return _strokeText.apply(this, arguments); };
 
   // ---------- clima ----------
@@ -1890,7 +1965,7 @@ if (!window.__psLuzCtx) {
   // Lo que cae (lluvia, nieve) entra y sale en ~1,5 s; lo que se queda en el suelo, no: el suelo se
   // moja poco a poco y los charcos crecen (~20 s), y al parar se seca despacio (~1 min); la nieve
   // cuaja en ~30 s y tarda más en irse. Con todo de golpe se notaba que era un filtro.
-  let wet = 0, snowAcc = 0;
+  let wet = 0, snowAcc = 0, wxBio = -2;
   function wxUpdate(dt) {
     const f = tune.wx;
     for (let k = 0; k < 5; k++) {
@@ -1898,7 +1973,9 @@ if (!window.__psLuzCtx) {
       wxCur[k] += (t - wxCur[k]) * Math.min(1, dt * 1.4);
     }
     wet = Math.max(0, Math.min(1, wet + (wxCur[1] > .05 ? wxCur[1] * dt / 20 : -dt / 60)));
-    snowAcc = Math.max(0, Math.min(1, snowAcc + (wxCur[3] > .05 ? wxCur[3] * dt / 30 : -dt / 90)));
+    snowAcc = Math.max(0, Math.min(1, snowAcc + (wxCur[3] > .05 ? wxCur[3] * dt / 30 : -dt / 40)));
+    // al cambiar de sitio (entrar o salir de una grieta, otro escenario) no se lleva el agua ni la nieve
+    if (bioNow !== wxBio) { if (wxBio !== -2) { wet = 0; snowAcc = 0; } wxBio = bioNow; }
     if (f && f.fast) { wet = f[1] ? 1 : 0; snowAcc = f[3] ? 1 : 0; } // (pruebas: ya acumulado, o seco)
   }
 
@@ -1927,17 +2004,40 @@ if (!window.__psLuzCtx) {
       if (impacts.length > 6) impacts.shift();
     }
     prevNums = nums; nums = [];
-    for (let i = impacts.length - 1; i >= 0; i--) if (now - impacts[i].t > 450) impacts.splice(i, 1);
+    for (let i = impacts.length - 1; i >= 0; i--) if (now - impacts[i].t > (impacts[i].dur || 450)) impacts.splice(i, 1);
   }
   const shkBuf = new Float32Array(16);
   function impactLights(now) {
     shkBuf.fill(0);
     let j = 0;
     for (let i = impacts.length - 1; i >= 0; i--) {
-      const im = impacts[i], a = (now - im.t) / 450, e = Math.exp(-a * 5);
-      lights.push(im.x, im.y, 110 + 60 * im.k, 1.1 * im.k * e, im.c[0], im.c[1], im.c[2]);
-      if (j < 4 && !calm) { shkBuf.set([im.x / game.width, 1 - im.y / game.height, a, im.k], j * 4); j++; }
+      const im = impacts[i], a = (now - im.t) / (im.dur || 450), e = Math.exp(-a * 5);
+      if (a > 1) continue;
+      lights.push(im.x, im.y, im.r || 110 + 60 * im.k, 1.1 * im.k * e, im.c[0], im.c[1], im.c[2]);
+      if (im.ring !== false && j < 4 && !calm) { shkBuf.set([im.x / game.width, 1 - im.y / game.height, a, im.k], j * 4); j++; }
     }
+  }
+  // subir de nivel: el número de nivel del HUD («Nv. 3») cambia → un fogonazo dorado grande
+  let lastLevel = 0;
+  function noteHudText(t) {
+    const m = /^Nv\.?\s*(\d+)/.exec(t); if (!m) return;
+    const v = +m[1];
+    if (lastLevel && v > lastLevel) impacts.push({ x: game.width * .5, y: game.height * .48, t: performance.now(), c: [1, .85, .45], k: 1, r: 420, dur: 900 });
+    lastLevel = v;
+  }
+  // recoger: algo pequeño que brillaba junto al jugador (gema, moneda) desaparece → un destello suyo
+  let gems = [], prevGems = [];
+  function noteGem(x, y, c) { if (gems.length < 120) gems.push(x, y, c); }
+  function gemsUpdate(now) {
+    const px = game.width * .5, py = game.height * .48, near = artScale * 40;
+    for (let i = 0; i < prevGems.length; i += 3) {
+      if (Math.hypot(prevGems[i] - px, prevGems[i + 1] - py) > near) continue;
+      let still = false;
+      for (let j = 0; j < gems.length; j += 3) if (Math.abs(gems[j] - prevGems[i]) < 30 && Math.abs(gems[j + 1] - prevGems[i + 1]) < 30) { still = true; break; }
+      if (!still) impacts.push({ x: prevGems[i], y: prevGems[i + 1], t: now, c: prevGems[i + 2], k: .6, r: 120, dur: 350, ring: false });
+    }
+    if (impacts.length > 10) impacts.splice(0, impacts.length - 10);
+    prevGems = gems; gems = [];
   }
 
   // El juego pinta su propia viñeta (un degradado a pantalla completa) encima del mundo: si la
@@ -2084,13 +2184,16 @@ if (!window.__psLuzCtx) {
     if (Math.hypot(x - game.width * .5, y - game.height * .48) < artScale * 12) return;
     const size = Math.max(d.fr - d.fl + 1, d.foot - d.top + 1) * Math.max(kx, ky) * Math.hypot(m.a, m.b);
     const mx = Math.max(...d.ecol, .01);
+    if (!sprLightOnlyNow && size < artScale * 20) noteGem(x, y, d.ecol.map(v => v / mx));
     lights.push(x, y, Math.max(50, Math.min(220, size * (d.isImg ? 1.5 : 2))), (d.isImg ? Math.min(.6, .18 + d.emit * 3) : Math.min(.9, d.emit * 2.5)) * ga, d.ecol[0] / mx, d.ecol[1] / mx, d.ecol[2] / mx);
   }
   // proyectiles y efectos centrados (girados): sólo su luz, ni sombra ni normales
+  let sprLightOnlyNow = false;
   function sprLightOnly(c, img, dx, dy, dw, dh) {
     if (!(img instanceof HTMLCanvasElement || img instanceof HTMLImageElement) || dw <= 0 || dh <= 0) return;
     const d = spriteData(img, 0, 0, img.width, img.height); if (!d) return;
-    sprLight(c.getTransform(), d, dx, dy, dw / img.width, dh / img.height, Math.min(1, c.globalAlpha));
+    sprLightOnlyNow = true;
+    try { sprLight(c.getTransform(), d, dx, dy, dw / img.width, dh / img.height, Math.min(1, c.globalAlpha)); } finally { sprLightOnlyNow = false; }
   }
 
   // Lee el sprite una sola vez: pie (fila opaca más baja), ancho del pie, silueta y normales.
@@ -2190,7 +2293,11 @@ if (!window.__psLuzCtx) {
     }
     // (éstos sí, en la GPU: se dibujan cientos de veces por frame)
     nrm.getContext('2d', { willReadFrequently: false }).putImageData(ni, 0, 0); sil.getContext('2d', { willReadFrequently: false }).putImageData(si, 0, 0);
-    return { foot, top, fl, fr, nrm, sil, emit, ecol, ecx, ecy, isImg: img instanceof HTMLImageElement, isCrystal: matIdx === 3 };
+    // color medio del sprite (lo saturado pesa más): el del aura de un jefe
+    let ar = 0, ag = 0, ab = 0, aw = 0;
+    for (let i = 0; i < n; i++) if (A[i]) { const r = px[i * 4] / 255, g = px[i * 4 + 1] / 255, b = px[i * 4 + 2] / 255, w = .05 + Math.max(r, g, b) - Math.min(r, g, b); ar += r * w; ag += g * w; ab += b * w; aw += w; }
+    const acol = aw > 0 ? [ar / aw, ag / aw, ab / aw] : [1, 1, 1];
+    return { acol, foot, top, fl, fr, nrm, sil, emit, ecol, ecx, ecy, isImg: img instanceof HTMLImageElement, isCrystal: matIdx === 3 };
   }
   function spriteData(img, sx, sy, sw, sh) {
     let byRect = sprInfo.get(img);
@@ -2250,6 +2357,14 @@ if (!window.__psLuzCtx) {
     const ga = Math.min(1, c.globalAlpha), kx = dw / sw, ky = dh / sh;
     if (tune.nb && ga > .9) { nbx.setTransform(m.a * .5, 0, 0, m.d * .5, m.e * .5, m.f * .5); _draw.call(nbx, d.nrm, 0, 0, sw, sh, dx, dy, dw, dh); }
     sprLight(m, d, dx, dy, kx, ky, ga);
+    // un Pokémon enorme (un jefe) ilumina a su alrededor con el color de su cuerpo
+    const hpx = (d.foot - d.top + 1) * ky * m.d;
+    if (d.isImg && hpx > 150 && ga > .5) {
+      // (a sus pies: desde dentro de su cuerpo lo blanqueaba)
+      const cx = m.a * (dx + (d.fl + d.fr + 1) * .5 * kx) + m.e, cy = m.d * (dy + (d.foot + 1) * ky) + m.f + hpx * .08;
+      const mx = Math.max(...d.acol, .01);
+      lights.push(cx, cy, Math.min(420, hpx * 1.1), .28 * (.85 + .15 * Math.sin(performance.now() / 400)), d.acol[0] / mx, d.acol[1] / mx, d.acol[2] / mx);
+    }
     const Fy = dy + (d.foot + 1) * ky, Fx = dx + (d.fl + d.fr + 1) * .5 * kx; // pie, en unidades del juego
     if (d.isImg && feet.length < 240) feet.push(m.a * Fx + m.e, m.d * Fy + m.f, (d.fr - d.fl + 1) * kx * m.a);
     const a = m.a * .5, dd = m.d * .5, e = m.e * .5, f = m.f * .5;          // a media resolución

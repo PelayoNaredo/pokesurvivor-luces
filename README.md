@@ -108,6 +108,18 @@ On the extensions page, click **Remove** on the extension's card. You can then d
 - **Moonlight through the trees:** in the forest, moonbeams slip through the gaps in the leaves.
 - **More water detail:** the moon reflects as a disc that wobbles with the waves, foam moves
   along the shore and ripples spread around anything standing in the water.
+- **Cliffs and walls with volume:** they cast shadows, their tops catch the moonlight, their
+  faces sit in shade and the ground at their foot darkens.
+- **Grounded sprites:** Pokémon darken when their feet stand in shadow, everything gets a
+  darker base where it touches the ground, and Pokémon wading in water look submerged.
+- **Footprints and trails** in snow, sand and mud that fade over time; embers rising from fires
+  and sparks on every hit; a golden burst when you level up and a flash when you pick something
+  up; bosses glow with their own colour.
+- **Atmosphere:** low ground fog that parts around you, heat glowing above lava, mushrooms that
+  glow at night in dark places, leaves lit from behind, storms with lightning, fireflies that
+  light the ground, crystals tinting the light, an aurora in the ice rift and stars reflected
+  in the water.
+- **Optional tilt-shift** ("Efecto maqueta" in the menu) for a miniature look.
 - **Cinematic colour:** AgX tone mapping (the one Blender uses) keeps strong colours rich
   instead of washing them out.
 - **Soft fog with light shafts**, floating particles and rim light on characters.
