@@ -704,7 +704,8 @@ if (!window.__psLuzCtx) {
     // gaussiano: lo muy brillante (fuegos, gemas, chispas) se abre en círculos de bokeh. Cada
     // muestra sólo cuenta si su propio desenfoque llega hasta este píxel: así lo enfocado no se
     // emborrona con lo de alrededor ni deja halos.
-    float coc(float y){ return clamp((abs(y-focus)-.07)/.38,0.,1.)*maxR; }
+    // (franja nítida ancha y desenfoque sólo hacia los bordes: más fuerte se veía forzado)
+    float coc(float y){ float t=clamp((abs(y-focus)-.2)/.32,0.,1.); return t*t*maxR; }
     void main(){
       vec3 base=texture2D(T,uv).rgb;
       float R=coc(uv.y);
@@ -717,7 +718,7 @@ if (!window.__psLuzCtx) {
           vec3 sm=texture2D(T,q).rgb;
           float w=smoothstep(r-1.5,r+.5,coc(q.y)+.5);
           float l=dot(sm,vec3(.299,.587,.114));
-          w*=1.+smoothstep(.5,.95,l)*8.;           // los brillos pesan más: bokeh
+          w*=1.+smoothstep(.6,.95,l)*3.;           // los brillos pesan más: bokeh
           acc+=sm*w; ws+=w;
         }
         col=acc/ws;
@@ -725,10 +726,9 @@ if (!window.__psLuzCtx) {
       // aspecto de miniatura: colores de juguete (algo más de saturación y contraste), un poco más
       // de luz en el centro y una viñeta suave hacia las esquinas
       float l=dot(col,vec3(.299,.587,.114));
-      col=mix(vec3(l),col,1.22);
-      col=(col-.5)*1.08+.5+.012;
+      col=mix(vec3(l),col,1.05);
       vec2 v=(uv-vec2(.5,focus))*vec2(1.,1.2);
-      col*=1.-.22*smoothstep(.15,.75,dot(v,v)*2.2);
+      col*=1.-.07*smoothstep(.2,.8,dot(v,v)*2.2);
       gl_FragColor=vec4(clamp(col,0.,1.),1.);
     }`;
 
@@ -1834,7 +1834,7 @@ if (!window.__psLuzCtx) {
       gl.uniform1f(u.flash, flash);
       setLights(u, w, h);
     });
-    if (tiltOn) pass(P.tilt, null, [['T', T.fin.t]], u => { gl.uniform2f(u.px, 1 / w, 1 / h); gl.uniform1f(u.focus, 1 - center[1]); gl.uniform1f(u.maxR, 16 * h / 1080); });
+    if (tiltOn) pass(P.tilt, null, [['T', T.fin.t]], u => { gl.uniform2f(u.px, 1 / w, 1 / h); gl.uniform1f(u.focus, 1 - center[1]); gl.uniform1f(u.maxR, 7 * h / 1080); });
     if (fresh) fresh--;
     profPoll();
     meterExposure(now, aOut);
