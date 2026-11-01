@@ -173,6 +173,27 @@ if (!window.__psLuzCtx) {
   }
   // nubes que pasan por delante de la luna: al aire libre sí; en la cueva y en las grietas no hay cielo
   for (const b of BIOMES) if (b.clouds === undefined) b.clouds = b.id.startsWith('grieta-') || b.id === 'cueva-cristal' ? 0 : .32;
+  // Muros y acantilados: el juego los pinta dentro del suelo (casillas de 16 píxeles de arte con
+  // cara superior y 6 píxeles de cara frontal), así que no son sprites y no echaban sombra. Se
+  // reconocen por sus colores exactos, los de cada escenario (sacados del código del juego).
+  const WALLS_BY_FLOOR = {
+    '#3e7a39': ['#5d6e49', '#677a50', '#566544', '#88a06e', '#3e4934', '#363f2d', '#232a1d'],
+    '#4d5778': ['#5f5089', '#695996', '#56497d', '#a08ddc', '#1f1934', '#3f3463', '#382e59', '#221c3a'],
+    '#5b4537': ['#3c3634', '#443d3a', '#35302e', '#141110', '#2b2624', '#25201f', '#151211'],
+    '#2f3a26': ['#3d3446', '#45394f', '#362e3e', '#6a5a7a', '#140f18', '#2a2330', '#241e2a', '#130f16'],
+    '#34303f': ['#4a4652', '#524e5c', '#423e49', '#7a7684', '#2e2b34', '#28252e', '#141217'],
+    '#1f2a2a': ['#2e2838', '#352e40', '#282231', '#584c66', '#0e0b12', '#211c28', '#1c1823', '#0f0d13']
+  };
+  const ARENA_WALL = { fire: '#3a2826', water: '#2a4660', grass: '#4a6a36', electric: '#3a3a48', ice: '#7f9fc0', poison: '#33263f',
+    ground: '#8a5e34', flying: '#dfe8f4', psychic: '#3e2a55', bug: '#5e4a26', rock: '#55473a', ghost: '#24202e', dragon: '#24264a',
+    dark: '#1c181f', steel: '#465060', fairy: '#7a5a8a', judgment: '#2e2829' };
+  for (const b of BIOMES) {
+    if (b.id.startsWith('grieta-')) {
+      const w = ARENA_WALL[b.id.slice(7)];
+      // (la misma receta que el juego para las arenas)
+      b.wall = w ? [w, tone(w, .07), tone(w, -.07), tone(w, .32), tone(w, -.7), tone(w, -.3), tone(w, -.38), tone(w, -.55)] : [];
+    } else b.wall = WALLS_BY_FLOOR[b.floor[0]] || [];
+  }
   const NEUTRAL = { clouds: .2, tint: [1, 1, 1], fogCol: [0, 0, 0], fogMul: 1, moonMul: 1, canopy: 0, lightning: 0, flicker: 0, emit: 1,
     liqGlow: 0, caustic: 0, bubbles: 0, spec: 0, moteCol: [.05, .08, .04], moteDen: .56, moteRise: .15, moteBlink: 0, moteSize: 1,
     heat: 0, glitter: 0, vignetteMul: 1, flashCol: [.55, .6, .85], gLow: [1, 1, 1], gHigh: [1, 1, 1] };
@@ -298,7 +319,19 @@ if (!window.__psLuzCtx) {
   // sombras suaves de los motores (PCSS): primero se mira a qué altura está lo que tapa la
   // luz y, cuanto más alto, más ancha la penumbra. Nítida al pie, difusa en la copa.
   const FS_SHADOW = HEAD + `
-    uniform sampler2D SM,ST,M,NB; uniform vec2 res,cam; uniform float art,frame,jmode,time,canopy,clouds,sharp;
+    uniform sampler2D SM,ST,M,NB,WM; uniform vec2 res,cam,moonO; uniform float art,frame,jmode,time,canopy,clouds,sharp,wallH;
+    // ¿tapa un muro la luz que llega a px desde la dirección d (en el canvas, y hacia abajo)? Se sube
+    // hacia la luz: a la altura z, el muro se ve z más arriba en pantalla (su cara frontal)
+    float wallShade(vec2 px,vec2 d,float rot){
+      if(wallH<=0.)return 0.;
+      float o=0.;
+      for(int k=1;k<=8;k++){
+        float z=(float(k)-.5+.5*fract(rot*1.7))/8.*wallH*art;
+        vec2 q=px+vec2(-d.x*z,(d.y+1.)*z);
+        o=max(o,texture2D(WM,q/res).r*(1.-.35*float(k)/8.)); // (lo más alto tapa algo menos: penumbra)
+      }
+      return o;
+    }
     float soft(sampler2D T,vec2 px,float rot){
       float sr=art*3., hs=0., n=0.;
       for(int i=0;i<8;i++){
@@ -328,6 +361,12 @@ if (!window.__psLuzCtx) {
       // (qué píxeles son de un sprite y no reciben la sombra se decide en la composición, píxel a
       // píxel: aquí, a media resolución y con máscaras ensanchadas, la sombra se separaba del pie)
       float s=soft(SM,px,rot), t=soft(ST,px,rot+1.3);
+      // muros y acantilados: sombra de la luna y de la antorcha (alejándose del jugador)
+      if(texture2D(WM,uv).r<.5){
+        s=max(s,wallShade(px,moonO,rot));
+        vec2 tdv=px/res-vec2(.5,.48); tdv.y=-tdv.y; float tl=length(tdv);
+        if(tl>.02) t=max(t,wallShade(px,tdv/tl*.6,rot+.7)*smoothstep(.02,.08,tl));
+      }
       // el juego deja de pintar un árbol ~100 px antes de que su sombra salga por arriba (o por
       // la izquierda): sin este fundido, la punta de la sombra aparecería de golpe en el borde
       s*=smoothstep(0.,.09,1.-uv.y)*smoothstep(0.,.05,uv.x);
@@ -606,6 +645,14 @@ if (!window.__psLuzCtx) {
         st=max(st,exp(-dot(e,e)));
       }
       gl_FragColor=vec4(max(h*decay,st*.9),0.,0.,1.);
+    }`;
+
+  // 5f) muros: 1 donde el suelo es muro o acantilado del escenario actual (por color exacto)
+  const FS_WALLM = HEAD + `uniform sampler2D G; uniform vec2 full; uniform vec3 wc[8]; uniform float nwc;
+    void main(){
+      vec3 g=texture2D(G,(floor(uv*full)+.5)/full).rgb; float m=0.;
+      for(int i=0;i<8;i++){ if(float(i)>=nwc)break; m=max(m,step(distance(g,wc[i]),.004)); }
+      gl_FragColor=vec4(m,0.,0.,1.);
     }`;
 
   // 5d) agua y líquidos del escenario: máscara a media resolución (eran 5 lecturas por píxel)
@@ -1223,7 +1270,7 @@ if (!window.__psLuzCtx) {
   try {
     P = {
       prep: compile(FS_PREP), shadow: compile(FS_SHADOW), rc: compile(FS_RC), rcout: compile(FS_RCOUT), temporal: compile(FS_TEMPORAL), avg: compile(FS_AVG), pcol: compile(FS_PCOL),
-      down: compile(FS_DOWN), blur: compile(FS_BLUR), comp: compile(FS_COMP), floor: compile(FS_FLOOR), vol: compile(FS_VOL), decocell: compile(FS_DECOCELL), liq: compile(FS_LIQ), trail: compile(FS_TRAIL), tilt: compile(FS_TILT)
+      down: compile(FS_DOWN), blur: compile(FS_BLUR), comp: compile(FS_COMP), floor: compile(FS_FLOOR), vol: compile(FS_VOL), decocell: compile(FS_DECOCELL), liq: compile(FS_LIQ), trail: compile(FS_TRAIL), tilt: compile(FS_TILT), wallm: compile(FS_WALLM)
     };
   } catch (e) { console.warn('[luz] shaders:', e); cv.remove(); return; }
   for (const k in P) P[k].name = k;
@@ -1297,7 +1344,7 @@ if (!window.__psLuzCtx) {
       q: target(...d(4)),
       // cascadas: sondas cada 2 texels de 1/4, con margen para correr la rejilla con la cámara
       ...(() => { const [qw, qh] = d(4), pw = Math.ceil((qw / 2 + 16) / 16) * 16, ph = Math.ceil((qh / 2 + 16) / 16) * 16;
-        return { rcA: target(pw * 2, ph * 2), rcB: target(pw * 2, ph * 2), giOut: target(pw, ph), giTmp: target(pw, ph) }; })(), vol: target(...d(4)), volTmp: target(...d(4)), liq: target(...d(2)), trA: target(...d(4)), trB: target(...d(4)), fin: target(w, h),
+        return { rcA: target(pw * 2, ph * 2), rcB: target(pw * 2, ph * 2), giOut: target(pw, ph), giTmp: target(pw, ph) }; })(), vol: target(...d(4)), volTmp: target(...d(4)), liq: target(...d(2)), wm: target(...d(2)), trA: target(...d(4)), trB: target(...d(4)), fin: target(w, h),
       e8: target(...d(8)), e8b: target(...d(8)),
       e16: target(...d(16)), e16b: target(...d(16)),
       e32: target(...d(32)), e32b: target(...d(32)),
@@ -1484,6 +1531,7 @@ if (!window.__psLuzCtx) {
     blur(T.giOut, T.giTmp);
     giST = [qw / (2 * pw), qh / (2 * ph), -offX / (2 * pw), -offY / (2 * ph)];
   }
+  let wallsOn = false;
   let artScale = 2.5, camE = 0, camF = 0, prevE = 0, prevF = 0, debug = 0, frame = 0, histFlip = false;
   function render(now) {
     const w = game.width, h = game.height;
@@ -1552,7 +1600,16 @@ if (!window.__psLuzCtx) {
       // sin escenario reconocido se deja emitir al suelo como antes (no se sabe qué hay)
       gl.uniform1f(u.groundEmit, bioNow >= 0 ? Math.min(1, bio.liqGlow * 1.2) : 1); });
     spriteUpload();
-    pass(P.shadow, T.shadow, [['M', T.prep.t], ['SM', texSM], ['ST', texST], ['NB', texNB]], u => {
+    {
+      const wl = dom && dom.wall && dom.wall.length ? dom.wall : null;
+      if (wl) pass(P.wallm, T.wm, [['G', texG]], u => {
+        gl.uniform2f(u.full, w, h); gl.uniform1f(u.nwc, Math.min(8, wl.length));
+        if (u['wc[0]']) gl.uniform3fv(u['wc[0]'], wl.slice(0, 8).flatMap(hex).concat(Array(24).fill(0)).slice(0, 24));
+      });
+      wallsOn = !!wl;
+    }
+    pass(P.shadow, T.shadow, [['M', T.prep.t], ['SM', texSM], ['ST', texST], ['NB', texNB], ['WM', T.wm.t]], u => {
+      gl.uniform2f(u.moonO, moonOx, moonOy); gl.uniform1f(u.wallH, wallsOn && tune.walls ? 10 : 0);
       gl.uniform2f(u.res, T.prep.w, T.prep.h);
       gl.uniform1f(u.art, artScale); // píxeles de media resolución por píxel de arte
       gl.uniform1f(u.frame, frame % 1000);
@@ -1725,7 +1782,7 @@ if (!window.__psLuzCtx) {
   let onFrame = null; // gancho de pruebas: se llama con el frame ya pintado (aún legible)
   // jmode 2: ruido anclado al mundo (no titila al mover la cámara). Medido con _test/flicker.js:
   // la mezcla temporal deja el parpadeo de las sombras en movimiento entre 2 y 4 veces más bajo.
-  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true, giK: .55, pix: true, bands: .35, tm: 1, wx: null, sway: true, noGameShadows: true, wxDim: .45 };
+  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true, giK: .55, pix: true, bands: .35, tm: 1, wx: null, sway: true, noGameShadows: true, wxDim: .45, walls: true };
 
   function snap(t) {
     if (tune.skip && tune.skip.snap) return;
