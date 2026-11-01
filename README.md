@@ -83,7 +83,7 @@ On the extensions page, click **Remove** on the extension's card. You can then d
   (which takes on your partner Pokémon's colour). Each sprite is projected from its feet, so a
   dead tree casts its branches and a Pokémon its ears. Shadows are sharp at the base and get
   softer the higher the part that casts them, and everything gets a contact shadow where it
-  touches the ground.
+  touches the ground. These replace the game's round blob shadows.
 - **Volume on sprites:** every sprite gets a normal map generated from its silhouette and
   shading, so light wraps around it instead of just brightening it.
 - **Real point lights:** anything that glows (fire attacks, embers, gems) becomes a light

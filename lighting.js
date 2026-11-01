@@ -1529,7 +1529,7 @@ if (!window.__psLuzCtx) {
   let onFrame = null; // gancho de pruebas: se llama con el frame ya pintado (aún legible)
   // jmode 2: ruido anclado al mundo (no titila al mover la cámara). Medido con _test/flicker.js:
   // la mezcla temporal deja el parpadeo de las sombras en movimiento entre 2 y 4 veces más bajo.
-  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true, giK: .55, pix: true, bands: .35, tm: 1, wx: null, sway: true };
+  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true, giK: .55, pix: true, bands: .35, tm: 1, wx: null, sway: true, noGameShadows: true };
 
   function snap(t) {
     if (tune.skip && tune.skip.snap) return;
@@ -1736,7 +1736,24 @@ if (!window.__psLuzCtx) {
     const o = C2[n]; if (!o) continue;
     C2[n] = function () { if (recording(this) && pathCmds.length < 4096) pathCmds.push([n, [...arguments], this.getTransform()]); return o.apply(this, arguments); };
   }
-  C2.fill = (o => function (a) { if (recording(this) && isFx(this, this.fillStyle)) fxPath(this, 'fill', a); return o.apply(this, arguments); })(C2.fill);
+  // La sombrita del juego (una elipse negra semitransparente y aplanada bajo árboles, rocas, Pokémon
+  // y objetos) era su forma de dar volumen sin luces. Con las sombras de verdad sobra: con la luz
+  // encendida no se pinta. Los anillos de color (equipo, quemado, veneno) sí.
+  function isGameShadow(c, a) {
+    if (a || pathCmds.length !== 1 || pathCmds[0][0] !== 'ellipse') return false;
+    const e = pathCmds[0][1], st = c.fillStyle;
+    if (!(e[3] < e[2] * .7)) return false;
+    let al;
+    if (st === '#000000') al = 1;
+    else if (typeof st === 'string' && st.startsWith('rgba(0, 0, 0, ')) al = parseFloat(st.slice(14));
+    else return false;
+    return al * c.globalAlpha <= .6;
+  }
+  C2.fill = (o => function (a) {
+    if (recording(this) && tune.noGameShadows && isGameShadow(this, a)) return;
+    if (recording(this) && isFx(this, this.fillStyle)) fxPath(this, 'fill', a);
+    return o.apply(this, arguments);
+  })(C2.fill);
   C2.stroke = (o => function (a) { if (recording(this) && isFx(this, this.strokeStyle)) fxPath(this, 'stroke', a); return o.apply(this, arguments); })(C2.stroke);
   C2.fillRect = (o => function (x, y, w, h) {
     if (this === ctx && phase === 3 && depth === 0 && typeof this.fillStyle !== 'string' && w * h * this.getTransform().a ** 2 > game.width * game.height * .5)
