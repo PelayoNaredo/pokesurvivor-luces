@@ -298,7 +298,7 @@ if (!window.__psLuzCtx) {
   // sombras suaves de los motores (PCSS): primero se mira a qué altura está lo que tapa la
   // luz y, cuanto más alto, más ancha la penumbra. Nítida al pie, difusa en la copa.
   const FS_SHADOW = HEAD + `
-    uniform sampler2D SM,ST,M,NB; uniform vec2 res,cam; uniform float art,frame,jmode,time,canopy,clouds;
+    uniform sampler2D SM,ST,M,NB; uniform vec2 res,cam; uniform float art,frame,jmode,time,canopy,clouds,sharp;
     float soft(sampler2D T,vec2 px,float rot){
       float sr=art*3., hs=0., n=0.;
       for(int i=0;i<8;i++){
@@ -310,7 +310,7 @@ if (!window.__psLuzCtx) {
       if(c0.r>.5){hs+=c0.g;n+=1.;}
       if(n<.5)return 0.;
       float h=hs/n*127.5;            // altura media de lo que hace sombra, en píxeles de arte
-      float r=.6+h*art*.045;         // radio de la penumbra en píxeles de esta textura
+      float r=(.6+h*art*.045)*(1.-.5*sharp); // radio de la penumbra (con sol abrasador, luz dura: más nítida)
       float o=0.;
       for(int i=0;i<12;i++){
         float a=float(i)*2.39996+rot*1.7, rr=sqrt((float(i)+.5)/12.)*r;
@@ -516,7 +516,9 @@ if (!window.__psLuzCtx) {
       dens=smoothstep(.3,1.,dens)*fog*.55*(1.-.65*bk); // rampa ancha: bordes difusos, sin manchas
       // clima: la niebla espesa de verdad; la arena, una calima que corre con el viento; la lluvia, algo de bruma
       float wd=fbm(wp*.02+vec2(time*.4,time*.05));
-      dens=dens*(1.+wfog*1.4+wx.w+wx.x*.3)+wfog*.22+wx.w*.28*smoothstep(.2,.9,wd)+wx.x*.05;
+      // la niebla del clima se cierra con la distancia: cerca del jugador se ve, lejos no
+      float far=smoothstep(.12,.55,length((uv-center)*vec2(aspect,1.)));
+      dens=dens*(1.+wfog*1.2+wx.w+wx.x*.3)+wfog*(.1+.4*far)+wx.w*(.12+.3*smoothstep(.2,.9,wd))+wx.x*.05;
       // haces: de este punto hacia la antorcha y hacia la luna, mirando qué parte está a la sombra
       float sh=0.,sm=0.;
       vec2 vis=texture2D(S,uv).rg;
@@ -601,7 +603,7 @@ if (!window.__psLuzCtx) {
     // luces puntuales (capa de sprites): xy en pantalla, radio (en alturas de pantalla), fuerza; y su color
     uniform vec4 lp[16]; uniform vec3 lc[16]; uniform float nLights;
     // clima (lluvia, nieve, sol abrasador, arena), impactos (centro, edad 0-1, fuerza) y pies en el agua
-    uniform vec4 wx; uniform vec4 shk[4]; uniform vec4 rp[8]; uniform float nRp, tm;
+    uniform vec4 wx, wx2; uniform vec4 shk[4]; uniform vec4 rp[8]; uniform float nRp, tm;
     // toque de cada escenario (ver BIOMES en el JS)
     uniform vec3 liqA,liqB,liqFx,moteCol,flashCol; uniform vec4 bFx,bFx2,bLiq,moteP; uniform float flash;
     uniform vec4 rift; uniform float riftA; // grieta: centro y semiejes en píxeles (y de GL), opacidad
@@ -807,20 +809,34 @@ if (!window.__psLuzCtx) {
       n=normalize(mix(n,sn,onSpr*.85));
       float ndl=max(dot(n,normalize(vec3(moonDir,.9))),0.);
       // ---- clima ----
-      // lluvia: el suelo mojado se oscurece y forma charcos (siempre en los mismos sitios del mundo)
+      float wet=wx2.x, snw=wx2.y;
+      // Suelo mojado (crece con el tiempo que lleva lloviendo): más oscuro y algo más saturado, como
+      // la tierra húmeda. Los charcos salen en los huecos (siempre los mismos sitios del mundo) y se
+      // agrandan cuanto más llueve; al parar se encogen y se secan.
       float puddle=0.;
-      if(wx.x>.01){
-        // (en coordenadas finas del mundo: con píxeles de arte salían bordes en escalera)
-        puddle=smoothstep(.68,.74,noise(wp*.045)+noise(wp*.11)*.22)*(1.-onSpr)*(1.-liq);
-        alb*=1.-wx.x*.16*(1.-onSpr);
-        // el charco refleja el cielo nocturno: más oscuro y azulado, pero se sigue viendo el suelo
-        alb=mix(alb,alb*.5+vec3(.03,.05,.09),puddle*wx.x*.65);
+      if(wet>.01){
+        float pn=noise(wp*.03)*.62+noise(wp*.085)*.28+noise(wp*.23)*.1;
+        float th=mix(.8,.6,wet);
+        puddle=smoothstep(th,th+.035,pn)*(1.-onSpr)*(1.-liq);
+        float gw=wet*(1.-onSpr)*(1.-liq);
+        alb=mix(vec3(lum(alb)),alb,1.+.3*gw)*(1.-.22*gw);
+        // el charco: refleja el cielo (oscuro y azulado) y casi no deja ver el suelo del fondo
+        alb=mix(alb,alb*.35+vec3(.025,.04,.07),puddle*.75);
       }
-      // nieve: blanquea lo que mira hacia arriba (copas, rocas, lomos) y el suelo a manchas
-      if(wx.y>.01){
-        // (conserva el dibujo de debajo: la nieve toma su luminosidad, no lo tapa con un blanco plano)
-        float cover=onSpr>.5?smoothstep(.2,.6,sxy.y)*.7:(.3+.25*smoothstep(.3,.8,noise(pa*.03)))*(1.-liq);
-        alb=mix(alb,vec3(.86,.9,.98)*(.72+.6*lum(alb)),cover*wx.y);
+      // Nieve (cuaja con el tiempo): en los sprites, sobre lo que mira hacia arriba (copas, rocas,
+      // lomos); en el suelo, más espesa en unas zonas que en otras y sin borrar el dibujo de debajo.
+      if(snw>.01){
+        // (los Pokémon se mueven: la nieve no se les queda encima; sí a árboles, rocas y cristales)
+        float cover;
+        if(onSpr>.5) cover=matOf(nb)==1.?0.:smoothstep(.25,.6,sxy.y)*.85*smoothstep(.0,.5,snw);
+        else {
+          // por píxel de arte y con tramado, como la pintaría un pixel artist: manchas nítidas que
+          // se van cerrando según cuaja (con un degradado suave parecía niebla)
+          float nz=noise(pa*.07)*.65+noise(pa*.19)*.35;
+          float amt=snw*(.55+.6*nz);
+          cover=step(hash(pa*.73+.11)*.5+.25,amt)*(1.-liq)*.8;
+        }
+        alb=mix(alb,vec3(.88,.92,.99)*(.78+.45*lum(alb)),cover);
       }
 
       vec2 vis=texture2D(S,uvL).rg;
@@ -929,16 +945,28 @@ if (!window.__psLuzCtx) {
         sky+=(moon*moonVis*.22+ambient*.14)*cloud*(1.-mirOn*.6)-ambient*.05*(1.-cloud);
         col+=liq*bLiq.w*(sheen*(moon*moonVis*.35+torch*att*.6)+sky+rl*1.2);
       }
-      // charcos: espejos de la luz que tienen cerca (antorcha, fuegos, luna) y ondas de las gotas
+      // charcos: espejos de la luz que tienen cerca (antorcha, fuegos, luna) y anillos de las gotas
       if(puddle>.01){
-        // gotas: un anillo que se abre (con posición fina, no por píxel: salían cuadraditos)
-        vec2 rc=floor(wp/14.); float rh=hash(rc+.3), rt=fract(time*1.6+rh*9.);
-        vec2 rpp=(rc+.25+.5*vec2(hash(rc+2.1),hash(rc+4.7)))*14.;
-        float pr=smoothstep(.9,0.,abs(length(wp-rpp)-rt*5.))*(1.-rt)*step(.55,rh);
-        // brillo: sólo donde la luz rebota de verdad hacia nosotros (puntos, no manchas)
-        float gl2=smoothstep(.6,.85,noise(pa*.35+vec2(time*.5,0.)));
-        col+=wx.x*puddle*((torch*att*.5+pl*.6+moon*moonVis*.2)*gl2+pr*(moon*moonVis*.35+torch*att*.5+.03));
+        // gotas: anillos que se abren (con posición fina, no por píxel: salían cuadraditos); dos
+        // capas desfasadas para que no se vea la rejilla, y más cuanto más fuerte llueve
+        float pr=0.;
+        for(int k=0;k<2;k++){
+          vec2 o2=vec2(float(k)*7.,float(k)*3.);
+          vec2 rc=floor((wp+o2)/11.); float rh=hash(rc+.3+float(k)), rt=fract(time*(1.4+float(k)*.3)+rh*9.);
+          vec2 rpp=(rc+.2+.6*vec2(hash(rc+2.1),hash(rc+4.7)))*11.-o2;
+          pr+=smoothstep(.8,0.,abs(length(wp-rpp)-rt*4.5))*(1.-rt)*step(1.-wx.x*.7,rh);
+        }
+        // reflejo: la luz cercana se ve en el charco como un brillo alargado que tiembla con las ondas
+        float gl2=smoothstep(.55,.85,noise(vec2(wp.x*.12,wp.y*.04)+vec2(0.,time*.6)));
+        col+=puddle*((torch*att*.55+pl*.7+moon*moonVis*.22)*(.25+.75*gl2)+pr*(moon*moonVis*.3+torch*att*.45+.03));
       }
+      // salpicaduras: con lluvia fuerte, gotas que rebotan en cualquier sitio del suelo (un instante)
+      if(wx.x>.05){
+        vec2 sc=floor(wp*.5); float sp=step(1.-wx.x*.004,hash(sc+floor(time*14.)*1.37));
+        col+=sp*(1.-onSpr)*(1.-liq)*(moon*moonVis*.25+torch*att*.5+.04);
+      }
+      // suelo mojado: un brillo suave de la luz cercana (no sólo en los charcos)
+      if(wet>.01) col+=wet*(1.-onSpr)*(1.-liq)*(torch*att*.12+pl*.15)*smoothstep(.5,.8,noise(wp*.2));
       // agua: la luna se refleja como un disco que tiembla con las olas, espuma en la orilla y
       // ondas a los pies de lo que se mete en el agua
       if(liq>.05&&bLiq.w>.1){
@@ -958,14 +986,24 @@ if (!window.__psLuzCtx) {
       }
       // ---- clima sobre la luz ----
       col*=mix(vec3(1.),vec3(.86,.92,1.04),wx.x*.7);   // lluvia: más frío y apagado
-      col*=mix(vec3(1.),vec3(.95,.98,1.06),wx.y*.6);   // nieve: luz fría y limpia
-      col*=mix(vec3(1.),vec3(1.12,1.04,.86),wx.z*.6);  // sol abrasador: luz blanca y cálida
-      col*=mix(vec3(1.),vec3(1.08,.98,.82),wx.w*.6);   // arena: amarillenta
-      // arena: ráfagas que barren el suelo con el viento
-      if(wx.w>.01){ float st=smoothstep(.65,.9,noise(vec2(wp.x*.02-time*2.2,wp.y*.25)))*wx.w; col=mix(col,vec3(.8,.68,.48)*(light*.8+.15),st*.35); }
-      // escarcha / polvo de cristal: destellos sueltos en el suelo que se encienden y apagan
-      float frost=step(.994-wx.y*.001,hash(pa*1.7+floor(time*2.5)))*(1.-liq)*(1.-above)*min(1.,bFx2.y+wx.y);
-      col+=frost*(vec3(.45,.5,.55)+torch*att+moon*moonVis*.6);
+      col*=mix(vec3(1.),vec3(.95,.98,1.05),max(wx.y,snw)*.5); // nieve: luz fría y limpia
+      col*=mix(vec3(1.),vec3(1.1,1.03,.88),wx.z*.55);  // sol abrasador: luz blanca y cálida
+      col*=mix(vec3(1.),vec3(1.06,.98,.85),wx.w*.5);   // arena: amarillenta
+      // con nieve, las sombras se vuelven azules (el cielo se refleja en la nieve)
+      col=mix(col,col*vec3(.82,.9,1.12),snw*shAmt*.6);
+      // arena: nubes de polvo que pasan con el viento (bandas largas y deshilachadas, no rayas) y
+      // granos que vuelan, cada uno una rayita fugaz
+      if(wx.w>.01){
+        vec2 wq=wp*vec2(.012,.03)+vec2(-time*.9,0.);
+        float dust=smoothstep(.45,.85,noise(wq)*.6+noise(wq*2.7+vec2(time*.3,0.))*.4)*wx.w;
+        col=mix(col,vec3(.78,.65,.45)*(light*.7+.18),dust*.4);
+        vec2 gc=vec2(wp.x*.05+time*6.,floor(wp.y*.5)); float gr=step(.985,hash(vec2(floor(gc.x),gc.y)))*smoothstep(.0,.6,fract(gc.x))*(1.-fract(gc.x));
+        col+=gr*wx.w*(moon*.3+torch*att*.4+.06);
+      }
+      // escarcha / polvo de cristal / nieve: destellos sueltos que se encienden y apagan, sólo donde
+      // les da la luz (en la sombra, la nieve no brilla)
+      float frost=step(.994-snw*.002,hash(pa*1.7+floor(time*2.5)))*(1.-liq)*(1.-above)*min(1.,bFx2.y+snw);
+      col+=frost*(vec3(.35,.4,.45)*(.3+.7*moonVis)+torch*att+moon*moonVis*.6);
 
       // niebla y haces de luz (pasada aparte a 1/4 de resolución, ver FS_VOL)
       vec4 vol=texture2D(VOL,uv);
@@ -1374,7 +1412,8 @@ if (!window.__psLuzCtx) {
       gl.uniform1f(u.jmode, tune.jmode);
       gl.uniform2f(u.cam, camE, camF);
       gl.uniform1f(u.time, (now / 1000) % 3600); gl.uniform1f(u.canopy, bio.canopy);
-      gl.uniform1f(u.clouds, calm ? bio.clouds * .5 : bio.clouds);
+      gl.uniform1f(u.clouds, (calm ? bio.clouds * .5 : bio.clouds) * (1 - wxCur[0] * .8)); // (con sol abrasador, cielo despejado)
+      gl.uniform1f(u.sharp, wxCur[0]);
     });
     const camShift = [(prevE - camE) / w, (camF - prevF) / h];
     const sHist = histFlip ? T.sHistA : T.sHistB, sHistOut = histFlip ? T.sHistB : T.sHistA;
@@ -1439,12 +1478,14 @@ if (!window.__psLuzCtx) {
       gl.uniform4fv(u.giST, giST);
       setLights(u, w, h);
       gl.uniform4f(u.wx, wxCur[1], wxCur[3], wxCur[0], wxCur[2]); gl.uniform1f(u.wfog, wxCur[4]); gl.uniform1f(u.canopy, bio.canopy);
+      gl.uniform2f(u.center, center[0], center[1]);
     });
     blur(T.vol, T.volTmp); // (el ruido de los haces, que antes quedaba por píxel)
     pass(P.comp, null, [['W', texW], ['S', T.shadow.t], ['M', T.prep.t], ['GI', T.giOut.t],
       ['B1', T.e8.t], ['B2', T.e16.t], ['B3', T.e32.t], ['NB', texNB], ['G', texG], ['DECO', texDeco], ['EXPO', aOut.t], ['VOL', T.vol.t], ['LQ', T.liq.t], ['DC', TDC.t]], u => {
       gl.uniform4fv(u.giST, giST);
       gl.uniform4f(u.wx, wxCur[1], wxCur[3], wxCur[0], wxCur[2]);
+      gl.uniform4f(u.wx2, wet, snowAcc, wxCur[4], 0);
       if (u['shk[0]']) gl.uniform4fv(u['shk[0]'], shkBuf);
       if (u['rp[0]']) gl.uniform4fv(u['rp[0]'], rpBuf);
       gl.uniform1f(u.nRp, nRp); gl.uniform1f(u.tm, tune.tm);
@@ -1633,12 +1674,19 @@ if (!window.__psLuzCtx) {
       wxSeen[k] = Math.min(1, p[3] * c.globalAlpha / WX[k][3]);
     }
   }
-  function wxUpdate(dt) { // fundido de ~1,5 s al empezar y al acabar
+  // Lo que cae (lluvia, nieve) entra y sale en ~1,5 s; lo que se queda en el suelo, no: el suelo se
+  // moja poco a poco y los charcos crecen (~20 s), y al parar se seca despacio (~1 min); la nieve
+  // cuaja en ~30 s y tarda más en irse. Con todo de golpe se notaba que era un filtro.
+  let wet = 0, snowAcc = 0;
+  function wxUpdate(dt) {
     const f = tune.wx;
     for (let k = 0; k < 5; k++) {
       const t = f ? f[k] || 0 : wxFrame === frameId ? wxSeen[k] : 0;
       wxCur[k] += (t - wxCur[k]) * Math.min(1, dt * 1.4);
     }
+    wet = Math.max(0, Math.min(1, wet + (wxCur[1] > .05 ? wxCur[1] * dt / 20 : -dt / 60)));
+    snowAcc = Math.max(0, Math.min(1, snowAcc + (wxCur[3] > .05 ? wxCur[3] * dt / 30 : -dt / 90)));
+    if (f && f.fast) { wet = f[1] ? 1 : 0; snowAcc = f[3] ? 1 : 0; } // (pruebas: ya acumulado, o seco)
   }
 
   // ---------- impactos ----------
