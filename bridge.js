@@ -1,7 +1,7 @@
 // Puente entre el menú de la extensión y la página. lighting.js vive en la página (para poder
 // engancharse al canvas del juego) y no tiene acceso a chrome.storage; este script sí, y le pasa
 // los ajustes por postMessage. Si el jugador cambia de modo con la tecla L, lo guarda aquí.
-const DEFAULTS = { mode: 'noche', variantes: true, deco: true };
+const DEFAULTS = { mode: 'noche', variantes: true, deco: true, maqueta: false };
 const send = s => window.postMessage({ psLuz: s }, location.origin);
 
 window.addEventListener('message', e => {

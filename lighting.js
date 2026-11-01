@@ -130,7 +130,7 @@ if (!window.__psLuzCtx) {
     ice: { liqGlow: 0, caustic: .3, bubbles: 0, spec: 1.5 }
   };
   const MOTES = {
-    luciernagas: { moteCol: [.85, 1, .4], moteDen: .55, moteRise: .03, moteBlink: 1, moteSize: 1 },
+    luciernagas: { moteCol: [.85, 1, .4], moteDen: .3, moteRise: .03, moteBlink: 1, moteSize: 1 },
     brasas: { moteCol: [1, .55, .2], moteDen: .45, moteRise: .12, moteBlink: .3, moteSize: .8 },
     burbujas: { moteCol: [.6, .85, 1], moteDen: .35, moteRise: .08, moteBlink: 0, moteSize: 1.2 },
     chispas: { moteCol: [1, .9, .35], moteDen: .4, moteRise: .02, moteBlink: 1, moteSize: .6 },
@@ -404,7 +404,9 @@ if (!window.__psLuzCtx) {
   // luz que llega a cada sonda de la cascada 0 (media de sus 4 direcciones)
   // y, de paso, el parpadeo de vela de cada zona (cada una a su ritmo). Se funde entre campos de
   // ruido fijos: un ruido que se desplaza con el tiempo se ve como ráfagas de viento barriendo el suelo.
-  const FS_RCOUT = HEAD + `uniform sampler2D C0; uniform vec2 p0,off,cam; uniform float k,art,hgt,time,flick;
+  // Y las luciérnagas (las partículas que parpadean) alumbran un poco de suelo a su alrededor: luz
+  // suave, así que va aquí, en las sondas, y no en cada píxel (eran 9 celdas con ruido por píxel).
+  const FS_RCOUT = HEAD + `uniform sampler2D C0; uniform vec2 p0,off,cam; uniform float k,art,hgt,time,flick,motes; uniform vec4 moteP; uniform vec3 moteCol;
     vec3 dec(vec3 y){y=min(y,vec3(.996));return 2.*y/(1.-y);}
     void main(){
       vec2 pr=floor(gl_FragCoord.xy); vec3 s=vec3(0.);
@@ -413,7 +415,19 @@ if (!window.__psLuzCtx) {
       vec2 wp=(vec2(c.x,hgt-c.y)-cam)/art;
       float ft=time*5., f0=floor(ft), fk=smoothstep(0.,1.,fract(ft));
       float fn=mix(noise(wp*.008+f0*17.31),noise(wp*.008+(f0+1.)*17.31),fk);
-      gl_FragColor=vec4(s*.25*k*(1.+flick*(fn-.5)*.35),1.);
+      vec3 ff=vec3(0.);
+      if(moteP.z>.5&&motes>0.){
+        vec2 mp=wp/(26.*moteP.w)+vec2(0.,time*moteP.y), cell=floor(mp);
+        for(int yy=-1;yy<=1;yy++)for(int xx=-1;xx<=1;xx++){
+          vec2 cl=cell+vec2(float(xx),float(yy)); float rr=hash(cl);
+          if(rr<1.-moteP.x*.3)continue;
+          vec2 cc=cl+vec2(hash(cl+1.7),hash(cl+4.3))*.7+.15+.1*vec2(sin(time*1.3+rr*40.),cos(time*1.1+rr*30.));
+          float bl=pow(max(0.,sin(time*1.7+rr*60.)),4.);
+          float dd=length(mp-cc);
+          ff+=moteCol*bl*exp(-dd*dd*30.);
+        }
+      }
+      gl_FragColor=vec4(s*.25*k*(1.+flick*(fn-.5)*.35)+ff*motes*.35,1.);
     }`;
 
   // 4) acumulación temporal con reproyección por el movimiento de la cámara
@@ -578,10 +592,26 @@ if (!window.__psLuzCtx) {
       gl_FragColor=vec4(gr,on*(grass>.5?1.:.5));
     }`;
 
+  // 5e) huellas: por donde pisan el jugador y los Pokémon queda un rastro que se borra despacio
+  // (~8 s). Va a 1/4 de resolución y se corre con la cámara, como la acumulación temporal.
+  const FS_TRAIL = HEAD + `uniform sampler2D H; uniform vec2 shift; uniform vec4 rp[8]; uniform float nRp,decay,aspect;
+    void main(){
+      vec2 p=uv+shift;
+      float h=(p.x<0.||p.y<0.||p.x>1.||p.y>1.)?0.:texture2D(H,p).r;
+      float st=0.;
+      for(int i=0;i<8;i++){
+        if(float(i)>=nRp)break;
+        vec2 d=(uv-rp[i].xy)*vec2(aspect,1.);
+        vec2 e=d/vec2(rp[i].z*.32,rp[i].z*.16);
+        st=max(st,exp(-dot(e,e)));
+      }
+      gl_FragColor=vec4(max(h*decay,st*.9),0.,0.,1.);
+    }`;
+
   // 5d) agua y líquidos del escenario: máscara a media resolución (eran 5 lecturas por píxel)
   // Sólo coincidencias casi exactas (la hierba del Huerto está a 0,04 del pantano hondo) y
   // en al menos 2 de 5 muestras: el agua tiene espuma y motas de otros colores.
-  const FS_LIQ = HEAD + `uniform sampler2D G; uniform vec2 o,full; uniform vec3 liqA,liqB;
+  const FS_LIQ = HEAD + `uniform sampler2D G,TRL; uniform vec2 o,full; uniform vec3 liqA,liqB;
     void main(){
       vec2 c=(floor(uv*full)+.5)/full; // en el centro de un píxel: el color exacto, sin mezclar
       float nl=0.;
@@ -590,7 +620,19 @@ if (!window.__psLuzCtx) {
         vec3 gs=texture2D(G,c+off*o).rgb;
         nl+=1.-smoothstep(.008,.02,min(distance(gs,liqA),distance(gs,liqB)));
       }
-      gl_FragColor=vec4(smoothstep(1.5,2.5,nl),0.,0.,1.);
+      gl_FragColor=vec4(smoothstep(1.5,2.5,nl),texture2D(TRL,uv).r,0.,1.);
+    }`;
+
+  // 7) efecto maqueta (opcional): desenfoque suave arriba y abajo de la pantalla, como una foto
+  // con poca profundidad de campo de una maqueta. El centro, donde está el jugador, queda nítido.
+  const FS_TILT = HEAD + `uniform sampler2D T; uniform vec2 px;
+    void main(){
+      float k=smoothstep(.16,.5,abs(uv.y-.5));
+      vec4 c=texture2D(T,uv);
+      if(k<.01){ gl_FragColor=c; return; }
+      vec4 a=vec4(0.); float r=k*7.;
+      for(int i=0;i<12;i++){ float an=float(i)*2.39996; float rr=sqrt((float(i)+.5)/12.)*r; a+=texture2D(T,uv+vec2(cos(an),sin(an))*rr*px); }
+      gl_FragColor=mix(c,a/12.,smoothstep(0.,.3,k));
     }`;
 
   // 6) composición final a resolución completa
@@ -807,8 +849,29 @@ if (!window.__psLuzCtx) {
       vec3 sn=vec3(sxy,sqrt(max(0.,1.-dot(sxy,sxy))));
       n=normalize(mix(n,sn,onSpr*.85));
       float ndl=max(dot(n,normalize(vec3(moonDir,.9))),0.);
+      // ---- huellas ----
+      // (lo que el clima pinta en el suelo —nieve, charcos, barro, huellas— sólo va sobre suelo de
+      // verdad: un ataque o un efecto pintado encima no es suelo, y la nieve le pasaba por encima)
+      float gnd=(1.-onSpr)*(1.-liq)*(1.-above);
+      float trl=texture2D(LQ,uvD).g*gnd;
+      // ---- vadeo ----
+      // Un Pokémon con los pies en el agua: lo que queda por debajo de la superficie (unos 5 píxeles
+      // de arte) se ve más oscuro, del color del agua y ondulado, con una línea clara donde corta.
+      if(onSpr>.5&&matOf(nb)==1.){
+        float hw=mod(floor(nb.b*255.+.5),64.)*2.;
+        vec2 fu=uv-vec2(0.,hw*2.*art/res.y);
+        if(texture2D(LQ,fu).r>.5&&hw<7.){
+          float sub=1.-smoothstep(3.,5.,hw);
+          vec3 und=texture2D(W,uvD+vec2(sin(time*4.+hw*1.7)*.4*2.*art/res.x,0.)).rgb;
+          alb=mix(alb,und*.5+liqFx*.14,sub*.8);
+          alb+=liqFx*.25*(smoothstep(4.,5.,hw)-smoothstep(5.,6.,hw));
+        }
+      }
       // ---- clima ----
       float wet=wx2.x, snw=wx2.y;
+      // huellas en suelo blando: la arena (tormenta) y el barro (mojado) se oscurecen por donde se
+      // pisa; la hierba queda un poco aplastada y más oscura
+      alb*=1.-trl*(.05+.14*max(wet,wx.w));
       // Suelo mojado (crece con el tiempo que lleva lloviendo): más oscuro y algo más saturado, como
       // la tierra húmeda. Los charcos salen en los huecos (siempre los mismos sitios del mundo) y se
       // agrandan cuanto más llueve; al parar se encogen y se secan.
@@ -816,24 +879,43 @@ if (!window.__psLuzCtx) {
       if(wet>.01){
         float pn=noise(wp*.03)*.62+noise(wp*.085)*.28+noise(wp*.23)*.1;
         float th=mix(.8,.6,wet);
-        puddle=smoothstep(th,th+.035,pn)*(1.-onSpr)*(1.-liq);
-        float gw=wet*(1.-onSpr)*(1.-liq);
+        puddle=smoothstep(th,th+.035,pn)*gnd;
+        float gw=wet*gnd;
         alb=mix(vec3(lum(alb)),alb,1.+.3*gw)*(1.-.22*gw);
         // el charco: refleja el cielo (oscuro y azulado) y casi no deja ver el suelo del fondo
         alb=mix(alb,alb*.35+vec3(.025,.04,.07),puddle*.75);
+        // y, como el agua, refleja lo que tiene encima (un árbol, un Pokémon), invertido y temblando
+        if(puddle>.3&&quality>1.5){
+          float sfound=-1.; vec2 st=vec2(0.,4.*art/res.y);
+          for(int k=1;k<=14;k++){ if(texture2D(NB,uv+st*float(k)).a>.5){sfound=float(k);break;} }
+          if(sfound>0.){
+            vec2 mu=uv+st*(2.*sfound)+vec2(sin(wp.y*.6+time*2.5)*.6*art/res.x,0.);
+            float ro=texture2D(NB,mu).a;
+            alb=mix(alb,texture2D(W,mu).rgb*.42,ro*puddle*.6*(1.-smoothstep(4.,14.,sfound)));
+          }
+        }
       }
       // Nieve (cuaja con el tiempo): en los sprites, sobre lo que mira hacia arriba (copas, rocas,
       // lomos); en el suelo, más espesa en unas zonas que en otras y sin borrar el dibujo de debajo.
       if(snw>.01){
         // (los Pokémon se mueven: la nieve no se les queda encima; sí a árboles, rocas y cristales)
         float cover;
-        if(onSpr>.5) cover=matOf(nb)==1.?0.:smoothstep(.25,.6,sxy.y)*.85*smoothstep(.0,.5,snw);
+        // (en árboles y rocas, la nieve se queda en la parte alta: la copa entera, más en lo que mira
+        // hacia arriba, y por píxel de arte con tramado; no sólo en el borde de arriba)
+        if(onSpr>.5){
+          float hs=mod(floor(nb.b*255.+.5),64.)*2.;
+          float up=smoothstep(-.1,.45,sxy.y)*.65+smoothstep(.3,.6,sxy.y)*.35;
+          float amt2=up*smoothstep(3.,12.,hs)*smoothstep(.0,.5,snw);
+          cover=matOf(nb)==1.?0.:step(hash(floor(uv*res/(2.*art))*.73)*.6+.2,amt2)*.85;
+        }
         else {
           // por píxel de arte y con tramado, como la pintaría un pixel artist: manchas nítidas que
           // se van cerrando según cuaja (con un degradado suave parecía niebla)
           float nz=noise(pa*.07)*.65+noise(pa*.19)*.35;
           float amt=snw*(.55+.6*nz);
-          cover=step(hash(pa*.73+.11)*.5+.25,amt)*(1.-liq)*.8;
+          cover=step(hash(pa*.73+.11)*.5+.25,amt)*gnd*.8;
+          cover*=1.-smoothstep(.15,.6,trl)*.85; // por donde se ha pisado, se ve el suelo
+          alb*=1.-trl*.12;
         }
         alb=mix(alb,vec3(.88,.92,.99)*(.78+.45*lum(alb)),cover);
       }
@@ -844,6 +926,18 @@ if (!window.__psLuzCtx) {
       // sprite no cae alineado con esa rejilla y la sombra quedaba a un píxel de él.
       float selfE=onSpr*step(.03,max(max(ddg.r,ddg.g),ddg.b));
       vec2 vis=mix(texture2D(S,uv).rg,vec2(1.),selfE*.8);
+      // Un sprite se oscurece si sus pies están en una sombra (un Pokémon que pasa bajo un árbol):
+      // cada píxel sabe a qué altura está sobre su pie. Se mira un poco hacia cada luz para no
+      // tomar como propia la sombra que el sprite echa detrás de sí.
+      vec2 ap=vec2(2.*art)/res;                           // un píxel de arte, en uv
+      float hh=mod(floor(nb.b*255.+.5),64.)*2.;           // altura sobre el pie (píxeles de arte)
+      vec2 footUv=uv-vec2(0.,hh*ap.y);
+      if(selfE>.5){
+        float vm=texture2D(S,footUv+moonDir*ap*3.).r;
+        vec2 tp=center-footUv; float tl=length(tp*vec2(aspect,1.));
+        float vt=texture2D(S,footUv+tp/max(tl,1e-3)*ap.y*3.).g;
+        vis=mix(vec2(1.),vec2(vm,vt),.85);
+      }
       float moonVis=mix(1.,vis.r,shadowK);
       moonVis*=texture2D(S,uvL).a; // copas y nubes (FS_SHADOW)
       float torchVis=mix(1.,vis.g,.88);
@@ -860,6 +954,8 @@ if (!window.__psLuzCtx) {
       float aoF=1.-ao*smoothstep(.05,.55,texture2D(B1,uvL).a)*(1.-occ);
       // sombra de contacto: el suelo se oscurece justo al pie de cada objeto
       aoF*=1.-.5*smoothstep(0.,.8,texture2D(S,uv).b)*(1.-selfE);
+      // la base de cada sprite se oscurece donde toca el suelo (le da peso: no parece una pegatina)
+      aoF*=1.-.32*selfE*(1.-smoothstep(0.,7.,hh));
 
       // luz de contorno: borde del sprite que mira a la antorcha / a la luna
       float ex=0.,ey=0.;
@@ -904,7 +1000,8 @@ if (!window.__psLuzCtx) {
                 +moon*ndl*moonVis*1.2
                 +torch*att*tdl*torchVis
                 +g*aoF+rimL
-                +flashCol*flash*aoF // relámpago lejano (sólo un fogonazo suave)
+                +flashCol*flash*aoF // relámpago: un fogonazo...
+                +flashCol*flash*moonVis*ndl*4. // ...que llega de lo alto, así que cada cosa echa su sombra
                 +vec3(.6,.35,1.)*riftA*exp(-rd*rd*.12)*(1.+.25*sin(time*3.)); // luz violeta de la grieta, que palpita
       vec3 e=m.rgb;
       float em=clamp(max(max(e.r,e.g),e.b)*2.,0.,1.);
@@ -943,10 +1040,10 @@ if (!window.__psLuzCtx) {
         vec3 rl=(texture2D(B1,mirUv).rgb*.6+texture2D(B2,mirUv).rgb*.4)*mirOn;
         // cielo reflejado: nubes que pasan despacio y se rompen con las ondas, para que el centro
         // de un lago grande, lejos de toda orilla, también refleje algo (menos donde ya hay reflejo)
-        vec2 cp=wp+vec2(sin(wp.y*.55+time*2.2)*1.5,0.);
-        float cl=noise(cp*.006+vec2(time*.02,time*.008))*.65+noise(cp*.017-vec2(time*.03,0.))*.35;
+        vec2 cp=wp+vec2(sin(wp.y*.55+time*1.1)*.8,0.);
+        float cl=noise(cp*.006+vec2(time*.008,time*.003))*.65+noise(cp*.017-vec2(time*.012,0.))*.35;
         float cloud=smoothstep(.42,.78,cl);
-        sky+=(moon*moonVis*.22+ambient*.14)*cloud*(1.-mirOn*.6)-ambient*.05*(1.-cloud);
+        sky+=(moon*moonVis*.13+ambient*.08)*cloud*(1.-mirOn*.6)-ambient*.03*(1.-cloud);
         col+=liq*bLiq.w*(sheen*(moon*moonVis*.35+torch*att*.6)+sky+rl*1.2);
       }
       // charcos: espejos de la luz que tienen cerca (antorcha, fuegos, luna) y anillos de las gotas
@@ -961,16 +1058,16 @@ if (!window.__psLuzCtx) {
           pr+=smoothstep(.8,0.,abs(length(wp-rpp)-rt*4.5))*(1.-rt)*step(1.-wx.x*.7,rh);
         }
         // reflejo: la luz cercana se ve en el charco como un brillo alargado que tiembla con las ondas
-        float gl2=smoothstep(.55,.85,noise(vec2(wp.x*.12,wp.y*.04)+vec2(0.,time*.6)));
-        col+=puddle*((torch*att*.55+pl*.7+moon*moonVis*.22)*(.25+.75*gl2)+pr*(moon*moonVis*.3+torch*att*.45+.03));
+        float gl2=smoothstep(.55,.85,noise(vec2(wp.x*.12,wp.y*.04)+vec2(0.,time*.12)));
+        col+=puddle*((torch*att*.4+pl*.5+moon*moonVis*.14)*(.5+.3*gl2)+pr*(moon*moonVis*.3+torch*att*.45+.03));
       }
       // salpicaduras: con lluvia fuerte, gotas que rebotan en cualquier sitio del suelo (un instante)
       if(wx.x>.05){
         vec2 sc=floor(wp*.5); float sp=step(1.-wx.x*.004,hash(sc+floor(time*14.)*1.37));
-        col+=sp*(1.-onSpr)*(1.-liq)*(moon*moonVis*.25+torch*att*.5+.04);
+        col+=sp*gnd*(moon*moonVis*.25+torch*att*.5+.04);
       }
       // suelo mojado: un brillo suave de la luz cercana (no sólo en los charcos)
-      if(wet>.01) col+=wet*(1.-onSpr)*(1.-liq)*(torch*att*.12+pl*.15)*smoothstep(.5,.8,noise(wp*.2));
+      if(wet>.01) col+=wet*gnd*(torch*att*.12+pl*.15)*smoothstep(.5,.8,noise(wp*.2));
       // agua: la luna se refleja como un disco que tiembla con las olas, espuma en la orilla y
       // ondas a los pies de lo que se mete en el agua
       if(liq>.05&&bLiq.w>.1){
@@ -1031,7 +1128,39 @@ if (!window.__psLuzCtx) {
       float blink=mix(.6+.4*sin(time*3.+r1*60.),pow(max(0.,sin(time*1.7+r1*60.)),4.),moteP.z);
       float dot_=(1.-smoothstep(.0,.045,length(fp-c)))*step(1.-moteP.x*.3,r1)*blink;
       col+=dot_*motes*.55*(torch*att*1.2+g*1.5+moon*.25+moteCol*.6);
+      // (la luz que echan las luciérnagas al suelo va con la luz rebotada: FS_RCOUT)
 
+      // brasas: cada luz de fuego suelta chispitas que suben, se mecen y se apagan; y cada golpe
+      // salta en chispas que salen disparadas y caen
+      if(quality>1.5&&nLights>0.){
+        vec2 apx=vec2(2.*art)/res;
+        for(int i=0;i<4;i++){
+          if(float(i)>=nLights)break;
+          vec4 L=lp[i];
+          if(lc[i].r<lc[i].b)continue; // (sólo luces cálidas: el agua no echa brasas)
+          vec2 dl=(uv-L.xy)*vec2(aspect,1.);
+          if(length(dl)>L.z*1.2)continue;
+          for(int k=0;k<5;k++){
+            float fk=float(k), fi=float(i);
+            float ph=fract(time*.55+fk*.2+fi*.37+hash(vec2(fk,fi))*.5);
+            if(ph<.12)continue; // (nacen ya fuera de la llama: encima la blanqueaban)
+            vec2 pos=L.xy+vec2((hash(vec2(fk,fi+3.))-.5)*L.z*.5/aspect+sin(time*2.+fk*1.7)*apx.x*3.*ph,ph*L.z*.9);
+            float dd=length((uv-pos)/apx);
+            col+=lc[i]*L.w*(1.-smoothstep(.4,1.2,dd))*(1.-ph)*(1.-ph)*.9;
+          }
+        }
+        for(int i=0;i<4;i++){
+          vec4 K=shk[i]; if(K.w<=0.)continue;
+          if(length((uv-K.xy)*vec2(aspect,1.))>.1)continue; // (sólo cerca del golpe)
+          for(int k=0;k<8;k++){
+            float an=float(k)*.785+float(i)*1.3+hash(vec2(float(k),float(i)))*.5;
+            float sp=.035+.025*hash(vec2(float(k)+7.,float(i)));
+            vec2 pos=K.xy+vec2(cos(an)/aspect,sin(an))*K.z*sp-vec2(0.,K.z*K.z*.03);
+            float dd=length((uv-pos)/apx);
+            col+=vec3(1.,.8,.5)*(1.-smoothstep(.3,1.,dd))*(1.-K.z)*(1.-K.z)*K.w*1.6;
+          }
+        }
+      }
       // chispas que caen en espiral hacia la grieta, y su halo
       if(riftA>0.){
         float th=atan(rq.y,rq.x);
@@ -1094,7 +1223,7 @@ if (!window.__psLuzCtx) {
   try {
     P = {
       prep: compile(FS_PREP), shadow: compile(FS_SHADOW), rc: compile(FS_RC), rcout: compile(FS_RCOUT), temporal: compile(FS_TEMPORAL), avg: compile(FS_AVG), pcol: compile(FS_PCOL),
-      down: compile(FS_DOWN), blur: compile(FS_BLUR), comp: compile(FS_COMP), floor: compile(FS_FLOOR), vol: compile(FS_VOL), decocell: compile(FS_DECOCELL), liq: compile(FS_LIQ)
+      down: compile(FS_DOWN), blur: compile(FS_BLUR), comp: compile(FS_COMP), floor: compile(FS_FLOOR), vol: compile(FS_VOL), decocell: compile(FS_DECOCELL), liq: compile(FS_LIQ), trail: compile(FS_TRAIL), tilt: compile(FS_TILT)
     };
   } catch (e) { console.warn('[luz] shaders:', e); cv.remove(); return; }
   for (const k in P) P[k].name = k;
@@ -1153,6 +1282,7 @@ if (!window.__psLuzCtx) {
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
   }
   let decoOn = !/[?&]deco=0/.test(location.search);
+  let tiltOn = /[?&]maqueta=1/.test(location.search); // efecto maqueta (opción del menú)
   let T = null, size = '', fresh = 2;
   function ensureTargets(w, h) {
     const k = w + 'x' + h;
@@ -1167,7 +1297,7 @@ if (!window.__psLuzCtx) {
       q: target(...d(4)),
       // cascadas: sondas cada 2 texels de 1/4, con margen para correr la rejilla con la cámara
       ...(() => { const [qw, qh] = d(4), pw = Math.ceil((qw / 2 + 16) / 16) * 16, ph = Math.ceil((qh / 2 + 16) / 16) * 16;
-        return { rcA: target(pw * 2, ph * 2), rcB: target(pw * 2, ph * 2), giOut: target(pw, ph), giTmp: target(pw, ph) }; })(), vol: target(...d(4)), volTmp: target(...d(4)), liq: target(...d(2)),
+        return { rcA: target(pw * 2, ph * 2), rcB: target(pw * 2, ph * 2), giOut: target(pw, ph), giTmp: target(pw, ph) }; })(), vol: target(...d(4)), volTmp: target(...d(4)), liq: target(...d(2)), trA: target(...d(4)), trB: target(...d(4)), fin: target(w, h),
       e8: target(...d(8)), e8b: target(...d(8)),
       e16: target(...d(16)), e16b: target(...d(16)),
       e32: target(...d(32)), e32b: target(...d(32)),
@@ -1326,7 +1456,7 @@ if (!window.__psLuzCtx) {
     for (let j = 0; j < nRp; j++) { const i = idx[j]; rpBuf.set([feet[i] / w, 1 - feet[i + 1] / h, Math.max(.02, feet[i + 2] / h * 1.2), 0], j * 4); }
   }
   let giST = [1, 1, 0, 0];
-  function radianceCascades(now, flick) {
+  function radianceCascades(now, flick, motesK, mp, mc) {
     const qw = T.q.w, qh = T.q.h, pw = T.giOut.w, ph = T.giOut.h, N = 5, per = 2 * 2 ** (N - 1);
     const md = (x, m) => ((x % m) + m) % m;
     const offX = md(camE / 4, per) - per, offY = md(-camF / 4, per) - per;
@@ -1349,6 +1479,7 @@ if (!window.__psLuzCtx) {
       gl.uniform2f(u.p0, pw, ph); gl.uniform1f(u.k, tune.giK); gl.uniform2f(u.off, offX, offY);
       gl.uniform2f(u.cam, camE, camF); gl.uniform1f(u.art, artScale); gl.uniform1f(u.hgt, game.height);
       gl.uniform1f(u.time, (now / 1000) % 3600); gl.uniform1f(u.flick, flick);
+      gl.uniform1f(u.motes, motesK); gl.uniform4f(u.moteP, mp[0], mp[1], mp[2], mp[3]); gl.uniform3fv(u.moteCol, mc);
     });
     blur(T.giOut, T.giTmp);
     giST = [qw / (2 * pw), qh / (2 * ph), -offX / (2 * pw), -offY / (2 * ph)];
@@ -1398,12 +1529,14 @@ if (!window.__psLuzCtx) {
     const mixing = best >= 0 && second > bestN * .12;
     decoFade = Math.max(0, Math.min(1, decoFade + (mixing ? -dt / .5 : dt / 2.5)));
     // relámpagos lejanos: un fogonazo suave y doble cada 20-35 s (nunca un estroboscopio)
-    if (bio.lightning > .01) {
-      if (!render.nextFlash) render.nextFlash = now + 8000;
-      if (now > render.nextFlash) { render.flashAt = now; render.nextFlash = now + 20000 + Math.random() * 15000; }
+    // (y con lluvia fuerte, tormenta: más a menudo, cada 10-22 s)
+    const storm = wxCur[1] > .55 ? wxCur[1] : 0, lightK = Math.max(bio.lightning, storm);
+    if (lightK > .01) {
+      if (!render.nextFlash) render.nextFlash = now + 6000;
+      if (now > render.nextFlash) { render.flashAt = now; render.nextFlash = now + (storm ? 10000 + Math.random() * 12000 : 20000 + Math.random() * 15000); }
     }
     const ft = (now - (render.flashAt || -1e9)) / 1000;
-    const flash = (calm ? 0 : 1) * bio.lightning * (Math.exp(-ft * 6) * (ft >= 0) + .6 * Math.exp(-Math.max(0, ft - .22) * 5) * (ft > .22)) * .35;
+    const flash = (calm ? 0 : 1) * lightK * (Math.exp(-ft * 6) * (ft >= 0) + .6 * Math.exp(-Math.max(0, ft - .22) * 5) * (ft > .22)) * .35;
     const S = Object.assign({}, shown, {
       lowTint: shown.lowTint.map((v, i) => v * bio.gLow[i]),
       highTint: shown.highTint.map((v, i) => v * bio.gHigh[i]),
@@ -1453,7 +1586,7 @@ if (!window.__psLuzCtx) {
     down(T.e8, T.e16); blur(T.e16, T.e16b); blur(T.e16, T.e16b);
     down(T.e16, T.e32); blur(T.e32, T.e32b); blur(T.e32, T.e32b);
 
-    if (quality > 0) radianceCascades(now, bio.flicker); else { gl.bindFramebuffer(gl.FRAMEBUFFER, T.giOut.f); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
+    if (quality > 0) radianceCascades(now, bio.flicker, S.motes, [bio.moteDen, bio.moteRise, bio.moteBlink, bio.moteSize], bio.moteCol); else { gl.bindFramebuffer(gl.FRAMEBUFFER, T.giOut.f); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
 
     pass(P.pcol, T.pcol, [['W', texW], ['M', T.prep.t], ['G', texG]], u => {
       gl.uniform2f(u.center, center[0], center[1]);
@@ -1474,14 +1607,21 @@ if (!window.__psLuzCtx) {
       gl.uniform2f(u.res, w, h); gl.uniform2f(u.cam, camE, camF); gl.uniform2f(u.cell0, cell0[0], cell0[1]);
       gl.uniform1f(u.art, artScale); gl.uniform1f(u.grassRatio, grassRatio);
     });
+    impactLights(now); feetUniform(w, h);
+    const trIn = histFlip ? T.trA : T.trB, trOut = histFlip ? T.trB : T.trA;
+    pass(P.trail, trOut, [['H', trIn.t]], u => {
+      gl.uniform2f(u.shift, camShift[0], camShift[1]);
+      if (u['rp[0]']) gl.uniform4fv(u['rp[0]'], rpBuf);
+      gl.uniform1f(u.nRp, fresh ? 0 : nRp); gl.uniform1f(u.aspect, w / h);
+      gl.uniform1f(u.decay, fresh ? 0 : Math.exp(-dt / 8));
+    });
     {
       const liq = dom ? dom.liq.map(hex) : [[9, 9, 9], [9, 9, 9]];
-      pass(P.liq, T.liq, [['G', texG]], u => {
+      pass(P.liq, T.liq, [['G', texG], ['TRL', trOut.t]], u => {
         gl.uniform2f(u.o, artScale / w, artScale / h); gl.uniform2f(u.full, w, h);
         gl.uniform3fv(u.liqA, liq[0]); gl.uniform3fv(u.liqB, liq[1]);
       });
     }
-    impactLights(now); feetUniform(w, h);
     pass(P.vol, T.vol, [['S', T.shadow.t], ['GI', T.giOut.t], ['EXPO', aOut.t]], u => {
       gl.uniform2f(u.res, w, h); gl.uniform2f(u.cam, camE, camF);
       gl.uniform2f(u.moonDir, S.moonDir[0], S.moonDir[1]); gl.uniform2f(u.center, center[0], center[1]);
@@ -1495,7 +1635,7 @@ if (!window.__psLuzCtx) {
       gl.uniform2f(u.center, center[0], center[1]);
     });
     blur(T.vol, T.volTmp); // (el ruido de los haces, que antes quedaba por píxel)
-    pass(P.comp, null, [['W', texW], ['S', T.shadow.t], ['M', T.prep.t], ['GI', T.giOut.t],
+    pass(P.comp, tiltOn ? T.fin : null, [['W', texW], ['S', T.shadow.t], ['M', T.prep.t], ['GI', T.giOut.t],
       ['B1', T.e8.t], ['B2', T.e16.t], ['B3', T.e32.t], ['NB', texNB], ['G', texG], ['DECO', texDeco], ['EXPO', aOut.t], ['VOL', T.vol.t], ['LQ', T.liq.t], ['DC', TDC.t]], u => {
       gl.uniform4fv(u.giST, giST);
       gl.uniform4f(u.wx, wxCur[1], wxCur[3], wxCur[0], wxCur[2]);
@@ -1538,6 +1678,7 @@ if (!window.__psLuzCtx) {
       gl.uniform1f(u.flash, flash);
       setLights(u, w, h);
     });
+    if (tiltOn) pass(P.tilt, null, [['T', T.fin.t]], u => gl.uniform2f(u.px, 1 / w, 1 / h));
     if (fresh) fresh--;
     profPoll();
     meterExposure(now, aOut);
@@ -1859,6 +2000,14 @@ if (!window.__psLuzCtx) {
   // lo que brilla, de su color. El jugador no: ya lleva su propia luz.
   function sprLight(m, d, dx, dy, kx, ky, ga) {
     // (un Pokémon de fuego tiene poca llama en proporción a su cuerpo: basta menos para alumbrar)
+    // los cristales: una luz suave de su color (la que se cuela a través de ellos y tiñe el suelo)
+    if (d.isCrystal) {
+      const cx = dx + (d.fl + d.fr + 1) * .5 * kx, cy = dy + (d.top + d.foot) * .5 * ky;
+      const x = m.a * cx + m.c * cy + m.e, y = m.b * cx + m.d * cy + m.f;
+      const c = d.ecol || [.45, .85, 1], mx = Math.max(...c, .01);
+      lights.push(x, y, Math.max(70, (d.foot - d.top) * ky * m.d * 1.6), .4 * ga, c[0] / mx, c[1] / mx, c[2] / mx);
+      return;
+    }
     if (!d.ecol || d.emit < (d.isImg ? .025 : .1)) return;
     // (un Pokémon amarillo o naranja entero, como Pikachu, no es una llama: si lo que brilla ocupa más
     // de un cuarto del sprite, es el color de su cuerpo)
@@ -1974,7 +2123,7 @@ if (!window.__psLuzCtx) {
     }
     // (éstos sí, en la GPU: se dibujan cientos de veces por frame)
     nrm.getContext('2d', { willReadFrequently: false }).putImageData(ni, 0, 0); sil.getContext('2d', { willReadFrequently: false }).putImageData(si, 0, 0);
-    return { foot, top, fl, fr, nrm, sil, emit, ecol, ecx, ecy, isImg: img instanceof HTMLImageElement };
+    return { foot, top, fl, fr, nrm, sil, emit, ecol, ecx, ecy, isImg: img instanceof HTMLImageElement, isCrystal: matIdx === 3 };
   }
   function spriteData(img, sx, sy, sw, sh) {
     let byRect = sprInfo.get(img);
@@ -2186,6 +2335,7 @@ if (!window.__psLuzCtx) {
     if (MODES.includes(a.mode) && a.mode !== mode) { mode = a.mode; apply(); }
     if (typeof a.variantes === 'boolean') variantsOn = a.variantes;
     if (typeof a.deco === 'boolean') decoOn = a.deco;
+    if (typeof a.maqueta === 'boolean') tiltOn = a.maqueta;
   });
   apply();
   window.postMessage({ psLuzListo: true }, location.origin); // la extensión responde con sus ajustes
@@ -2196,7 +2346,7 @@ if (!window.__psLuzCtx) {
     get fps() { return Math.round(1000 / avgDt); }, get hz() { return Math.round(1000 / refreshMs); },
     set debug(d) { debug = d; }, set onFrame(f) { onFrame = f; }, tune, stats,
     get variantes() { return variantsOn; }, set variantes(v) { variantsOn = !!v; },
-    get deco() { return decoOn; }, set deco(v) { decoOn = !!v; }, get grassRatio() { return grassRatio; },
+    get deco() { return decoOn; }, set deco(v) { decoOn = !!v; }, get maqueta() { return tiltOn; }, set maqueta(v) { tiltOn = !!v; }, get grassRatio() { return grassRatio; },
     get exposicion() { return +expoGain.toFixed(3); },
     get companero() { return partnerCol.map(v => Math.round(v * 255)); },
     get bioma() { return bioNow >= 0 ? BIOMES[bioNow].id : null; }, BIOMES, PRESETS,

@@ -1,6 +1,6 @@
 // Menú de la extensión: lee y guarda los ajustes en chrome.storage.sync; bridge.js los pasa al
 // juego en cuanto cambian, sin recargar la página.
-const DEFAULTS = { mode: 'noche', variantes: true, deco: true };
+const DEFAULTS = { mode: 'noche', variantes: true, deco: true, maqueta: false };
 const GAME = 'https://pokesurvivor.com/';
 
 chrome.storage.sync.get(DEFAULTS, s => {
@@ -8,11 +8,12 @@ chrome.storage.sync.get(DEFAULTS, s => {
   if (r) r.checked = true;
   document.getElementById('variantes').checked = s.variantes;
   document.getElementById('deco').checked = s.deco;
+  document.getElementById('maqueta').checked = s.maqueta;
 });
 
 document.querySelectorAll('input[name="mode"]').forEach(r =>
   r.addEventListener('change', () => chrome.storage.sync.set({ mode: r.value })));
-for (const id of ['variantes', 'deco'])
+for (const id of ['variantes', 'deco', 'maqueta'])
   document.getElementById(id).addEventListener('change', e => chrome.storage.sync.set({ [id]: e.target.checked }));
 
 // ¿Está el juego en esta pestaña? (activeTab deja leer su dirección al abrir el menú)
