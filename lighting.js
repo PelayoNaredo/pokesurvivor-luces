@@ -325,9 +325,8 @@ if (!window.__psLuzCtx) {
       vec2 wpx=vec2(px.x*2.-cam.x,(res.y-px.y)*2.-cam.y)*.5;
       float j=jmode<.5?hash(floor(px)):jmode<1.5?hash(floor(px)+fract(frame*.61803)*97.):hash(floor(wpx));
       float rot=j*6.2831853;
-      // ¿hay un sprite encima? La capa de sprites lo sabe exacto; la máscara adivinada tomaba los
-      // cristales claros por un brillo y les dejaba caer encima la sombra del de detrás
-      float self=max(texture2D(M,uv).a,texture2D(NB,uv).a);
+      // (qué píxeles son de un sprite y no reciben la sombra se decide en la composición, píxel a
+      // píxel: aquí, a media resolución y con máscaras ensanchadas, la sombra se separaba del pie)
       float s=soft(SM,px,rot), t=soft(ST,px,rot+1.3);
       // el juego deja de pintar un árbol ~100 px antes de que su sombra salga por arriba (o por
       // la izquierda): sin este fundido, la punta de la sombra aparecería de golpe en el borde
@@ -343,7 +342,7 @@ if (!window.__psLuzCtx) {
         float cs=noise(wp*.0016+vec2(time*.012,time*.005))*.7+noise(wp*.0041+vec2(time*.02,-time*.007))*.3;
         mv*=1.-clouds*smoothstep(.42,.72,cs);
       }
-      gl_FragColor=vec4(1.-s*(1.-self*.8),1.-t*(1.-self*.8),ct*(1.-self),mv);
+      gl_FragColor=vec4(1.-s,1.-t,ct,mv);
     }`;
 
   // 3) luz rebotada (iluminación global 2D) con Radiance Cascades (Sannikov, 2024).
@@ -518,7 +517,7 @@ if (!window.__psLuzCtx) {
       float wd=fbm(wp*.02+vec2(time*.4,time*.05));
       // la niebla del clima se cierra con la distancia: cerca del jugador se ve, lejos no
       float far=smoothstep(.12,.55,length((uv-center)*vec2(aspect,1.)));
-      dens=dens*(1.+wfog*1.2+wx.w+wx.x*.3)+wfog*(.1+.4*far)+wx.w*(.12+.3*smoothstep(.2,.9,wd))+wx.x*.05;
+      dens=dens*(1.+wfog*1.2+wx.w+wx.x*.3)+wfog*(.1+.4*far)+wx.w*(.25+.45*smoothstep(.15,.85,wd))+wx.x*.05;
       // haces: de este punto hacia la antorcha y hacia la luna, mirando qué parte está a la sombra
       float sh=0.,sm=0.;
       vec2 vis=texture2D(S,uv).rg;
@@ -538,7 +537,7 @@ if (!window.__psLuzCtx) {
         halo+=lc[i]*lp[i].w/(1.+dot(dd,dd)/(r*r)*3.);
       }
       // en el bosque los haces de luna entre las copas se marcan más
-      vec3 fc=mix(fogCol,vec3(.45,.37,.25),wx.w*.8);
+      vec3 fc=mix(fogCol,vec3(.62,.48,.3),wx.w);
       vec3 scatter=fc+torch*sh*shafts*.8+moon*sm*.25*shafts*(1.+canopy*1.6)+g*.6+halo*1.4;
       gl_FragColor=vec4(scatter*dens,dens);
     }`;
@@ -839,7 +838,12 @@ if (!window.__psLuzCtx) {
         alb=mix(alb,vec3(.88,.92,.99)*(.78+.45*lum(alb)),cover);
       }
 
-      vec2 vis=texture2D(S,uvL).rg;
+      // ¿este píxel es de un sprite? Exacto: la capa de sprites dice que hay uno y la imagen difiere
+      // del suelo solo. Los sprites casi no reciben sombra proyectada (su cara iluminada la da la luz
+      // de contorno). La sombra se lee en el píxel, no en el centro del píxel de arte: el pie de un
+      // sprite no cae alineado con esa rejilla y la sombra quedaba a un píxel de él.
+      float selfE=onSpr*step(.03,max(max(ddg.r,ddg.g),ddg.b));
+      vec2 vis=mix(texture2D(S,uv).rg,vec2(1.),selfE*.8);
       float moonVis=mix(1.,vis.r,shadowK);
       moonVis*=texture2D(S,uvL).a; // copas y nubes (FS_SHADOW)
       float torchVis=mix(1.,vis.g,.88);
@@ -855,7 +859,7 @@ if (!window.__psLuzCtx) {
       // oclusión ambiental: el suelo se oscurece al pie de lo que tiene encima
       float aoF=1.-ao*smoothstep(.05,.55,texture2D(B1,uvL).a)*(1.-occ);
       // sombra de contacto: el suelo se oscurece justo al pie de cada objeto
-      aoF*=1.-.5*smoothstep(0.,.8,texture2D(S,uvL).b);
+      aoF*=1.-.5*smoothstep(0.,.8,texture2D(S,uv).b)*(1.-selfE);
 
       // luz de contorno: borde del sprite que mira a la antorcha / a la luna
       float ex=0.,ey=0.;
@@ -988,17 +992,24 @@ if (!window.__psLuzCtx) {
       col*=mix(vec3(1.),vec3(.86,.92,1.04),wx.x*.7);   // lluvia: más frío y apagado
       col*=mix(vec3(1.),vec3(.95,.98,1.05),max(wx.y,snw)*.5); // nieve: luz fría y limpia
       col*=mix(vec3(1.),vec3(1.1,1.03,.88),wx.z*.55);  // sol abrasador: luz blanca y cálida
-      col*=mix(vec3(1.),vec3(1.06,.98,.85),wx.w*.5);   // arena: amarillenta
+      col*=mix(vec3(1.),vec3(1.14,.98,.76),wx.w*.75);  // arena: amarillenta y con menos contraste
+      col=mix(col,vec3(.72,.58,.38)*(lum(col)*.6+.25),wx.w*.22); // (calima: el aire está lleno de polvo)
       // con nieve, las sombras se vuelven azules (el cielo se refleja en la nieve)
       col=mix(col,col*vec3(.82,.9,1.12),snw*shAmt*.6);
       // arena: nubes de polvo que pasan con el viento (bandas largas y deshilachadas, no rayas) y
       // granos que vuelan, cada uno una rayita fugaz
       if(wx.w>.01){
         vec2 wq=wp*vec2(.012,.03)+vec2(-time*.9,0.);
-        float dust=smoothstep(.45,.85,noise(wq)*.6+noise(wq*2.7+vec2(time*.3,0.))*.4)*wx.w;
-        col=mix(col,vec3(.78,.65,.45)*(light*.7+.18),dust*.4);
-        vec2 gc=vec2(wp.x*.05+time*6.,floor(wp.y*.5)); float gr=step(.985,hash(vec2(floor(gc.x),gc.y)))*smoothstep(.0,.6,fract(gc.x))*(1.-fract(gc.x));
-        col+=gr*wx.w*(moon*.3+torch*att*.4+.06);
+        float dust=smoothstep(.3,.8,noise(wq)*.6+noise(wq*2.7+vec2(time*.3,0.))*.4)*wx.w;
+        // (sobre los sprites, algo menos: si no, árboles y Pokémon parecían fantasmas)
+        col=mix(col,vec3(.86,.68,.42)*(light*.7+.22),dust*.6*(1.-.45*onSpr));
+        // granos: dos capas a distinta velocidad (los cercanos van más rápido)
+        for(int k=0;k<2;k++){
+          float sp=6.+float(k)*5.;
+          vec2 gc=vec2(wp.x*.05+time*sp+float(k)*13.,floor(wp.y*.5)+float(k)*31.);
+          float gr=step(.965,hash(vec2(floor(gc.x),gc.y)))*smoothstep(.0,.7,fract(gc.x))*(1.-fract(gc.x));
+          col+=gr*wx.w*(vec3(.9,.75,.5)*.12+moon*.25+torch*att*.4);
+        }
       }
       // escarcha / polvo de cristal / nieve: destellos sueltos que se encienden y apagan, sólo donde
       // les da la luz (en la sombra, la nieve no brilla)
