@@ -754,7 +754,7 @@ if (!window.__psLuzCtx) {
       // la vegetación se mece: se lee la imagen desde donde viene la hoja; donde la hoja se ha ido
       // se ve el suelo (G). Un Pokémon u objeto delante no se mueve.
       vec2 sw=vec2(0.); float swG=0.;
-      if(wind>0.&&quality>.5){
+      if(wind>0.&&quality>1.5){
         vec4 n0=texture2D(NB,uv);
         if(!(n0.a>.5&&n0.b*255.>63.5)){
           vec2 s0=swayAt(uv);
@@ -800,10 +800,9 @@ if (!window.__psLuzCtx) {
         float s=-1.; vec2 st=vec2(0.,4.*o.y);
         for(int i=1;i<=32;i++){
           vec2 q=uv+st*float(i);
-          vec3 a=texture2D(G,q).rgb, b2=texture2D(G,q+st*.5).rgb;
-          float wa=step(min(distance(a,liqA),distance(a,liqB)),.02), wb=step(min(distance(b2,liqA),distance(b2,liqB)),.02);
-          // también para en un sprite que pisa el agua (jugador, Pokémon): se refleja bajo sus pies
-          if(wa+wb<.5||texture2D(M,q).a>.5){s=float(i);break;}
+          // (la orilla, en la máscara de agua: una lectura en vez de comparar colores en tres;
+          // también para en un sprite que pisa el agua: se refleja bajo sus pies)
+          if(texture2D(LQ,q).r<.5||texture2D(NB,q).a>.5){s=float(i);break;}
         }
         // ondas: el reflejo tiembla en horizontal, más lejos de la orilla
         float wob=sin(wp.y*.55+time*2.2)+.5*sin(wp.y*1.3-time*3.1+wp.x*.05);
@@ -885,7 +884,7 @@ if (!window.__psLuzCtx) {
         // el charco: refleja el cielo (oscuro y azulado) y casi no deja ver el suelo del fondo
         alb=mix(alb,alb*.35+vec3(.025,.04,.07),puddle*.75);
         // y, como el agua, refleja lo que tiene encima (un árbol, un Pokémon), invertido y temblando
-        if(puddle>.3&&quality>1.5){
+        if(puddle>.3&&quality>2.5){
           float sfound=-1.; vec2 st=vec2(0.,4.*art/res.y);
           for(int k=1;k<=14;k++){ if(texture2D(NB,uv+st*float(k)).a>.5){sfound=float(k);break;} }
           if(sfound>0.){
@@ -938,6 +937,7 @@ if (!window.__psLuzCtx) {
         float vt=texture2D(S,footUv+tp/max(tl,1e-3)*ap.y*3.).g;
         vis=mix(vec2(1.),vec2(vm,vt),.85);
       }
+      vis=mix(vis,vec2(1.),liq*.8);
       float moonVis=mix(1.,vis.r,shadowK);
       moonVis*=texture2D(S,uvL).a; // copas y nubes (FS_SHADOW)
       float torchVis=mix(1.,vis.g,.88);
@@ -953,7 +953,7 @@ if (!window.__psLuzCtx) {
       // oclusión ambiental: el suelo se oscurece al pie de lo que tiene encima
       float aoF=1.-ao*smoothstep(.05,.55,texture2D(B1,uvL).a)*(1.-occ);
       // sombra de contacto: el suelo se oscurece justo al pie de cada objeto
-      aoF*=1.-.5*smoothstep(0.,.8,texture2D(S,uv).b)*(1.-selfE);
+      aoF*=1.-.5*smoothstep(0.,.8,texture2D(S,uv).b)*(1.-selfE)*(1.-liq);
       // la base de cada sprite se oscurece donde toca el suelo (le da peso: no parece una pegatina)
       aoF*=1.-.32*selfE*(1.-smoothstep(0.,7.,hh));
 
@@ -988,7 +988,7 @@ if (!window.__psLuzCtx) {
         float fl=1.+bFx.w*.25*sin(time*(9.+float(i)*1.7)+float(i)*4.1)*sin(time*5.3+float(i));
         // las dos luces más fuertes proyectan sombra: del suelo hacia la luz, ¿se cruza algún sprite?
         float lsh=1.;
-        if(i<2&&quality>1.5&&onSpr<.5&&fall>.03){
+        if(i<2&&quality>2.5&&onSpr<.5&&fall>.03){
           vec2 to=L.xy-uvL; float oc=0.;
           for(int k=1;k<=8;k++){ float tt=float(k)/10.; oc=max(oc,texture2D(NB,uvL+to*tt).a*(1.-tt)); }
           lsh=1.-min(1.,oc*1.4)*.8;
@@ -1063,7 +1063,7 @@ if (!window.__psLuzCtx) {
       }
       // salpicaduras: con lluvia fuerte, gotas que rebotan en cualquier sitio del suelo (un instante)
       if(wx.x>.05){
-        vec2 sc=floor(wp*.5); float sp=step(1.-wx.x*.004,hash(sc+floor(time*14.)*1.37));
+        vec2 sc=floor(wp*.5); float sp=step(1.-wx.x*.0012,hash(sc+floor(time*14.)*1.37));
         col+=sp*gnd*(moon*moonVis*.25+torch*att*.5+.04);
       }
       // suelo mojado: un brillo suave de la luz cercana (no sólo en los charcos)
@@ -1111,7 +1111,7 @@ if (!window.__psLuzCtx) {
       }
       // escarcha / polvo de cristal / nieve: destellos sueltos que se encienden y apagan, sólo donde
       // les da la luz (en la sombra, la nieve no brilla)
-      float frost=step(.994-snw*.002,hash(pa*1.7+floor(time*2.5)))*(1.-liq)*(1.-above)*min(1.,bFx2.y+snw);
+      float frost=step(.997-snw*.0005,hash(pa*1.7+floor(time*2.5)))*(1.-liq)*(1.-above)*min(1.,bFx2.y+snw);
       col+=frost*(vec3(.35,.4,.45)*(.3+.7*moonVis)+torch*att+moon*moonVis*.6);
 
       // niebla y haces de luz (pasada aparte a 1/4 de resolución, ver FS_VOL)
@@ -1132,7 +1132,7 @@ if (!window.__psLuzCtx) {
 
       // brasas: cada luz de fuego suelta chispitas que suben, se mecen y se apagan; y cada golpe
       // salta en chispas que salen disparadas y caen
-      if(quality>1.5&&nLights>0.){
+      if(quality>2.5&&nLights>0.){
         vec2 apx=vec2(2.*art)/res;
         for(int i=0;i<4;i++){
           if(float(i)>=nLights)break;
@@ -1725,7 +1725,7 @@ if (!window.__psLuzCtx) {
   let onFrame = null; // gancho de pruebas: se llama con el frame ya pintado (aún legible)
   // jmode 2: ruido anclado al mundo (no titila al mover la cámara). Medido con _test/flicker.js:
   // la mezcla temporal deja el parpadeo de las sombras en movimiento entre 2 y 4 veces más bajo.
-  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true, giK: .55, pix: true, bands: .35, tm: 1, wx: null, sway: true, noGameShadows: true };
+  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true, giK: .55, pix: true, bands: .35, tm: 1, wx: null, sway: true, noGameShadows: true, wxDim: .45 };
 
   function snap(t) {
     if (tune.skip && tune.skip.snap) return;
@@ -1816,7 +1816,7 @@ if (!window.__psLuzCtx) {
   // Cada clima del juego tiñe la pantalla con un velo de un color fijo (sol, lluvia, arena, nieve,
   // niebla): así se sabe cuál hay sin depender del idioma del texto. La intensidad sale de su alfa.
   const WX = [[255, 190, 90, .07], [50, 90, 170, .09], [200, 160, 90, .09], [210, 230, 255, .08], [190, 195, 210, .12]];
-  const wxSeen = new Float32Array(5), wxCur = new Float32Array(5); let wxFrame = -1;
+  const wxSeen = new Float32Array(5), wxCur = new Float32Array(5); let wxFrame = -1, wxDrawFrame = -1;
   function wxCheck(c, w, h) {
     const st = c.fillStyle;
     if (typeof st !== 'string' || !st.startsWith('rgba(')) return;
@@ -1827,6 +1827,7 @@ if (!window.__psLuzCtx) {
       if (p[0] !== WX[k][0] || p[1] !== WX[k][1] || p[2] !== WX[k][2]) continue;
       if (wxFrame !== frameId) { wxSeen.fill(0); wxFrame = frameId; }
       wxSeen[k] = Math.min(1, p[3] * c.globalAlpha / WX[k][3]);
+      wxDrawFrame = frameId;
     }
   }
   // Lo que cae (lluvia, nieve) entra y sale en ~1,5 s; lo que se queda en el suelo, no: el suelo se
@@ -1962,6 +1963,15 @@ if (!window.__psLuzCtx) {
     if (this === ctx && phase === 3 && depth === 0 && typeof this.fillStyle !== 'string' && w * h * this.getTransform().a ** 2 > game.width * game.height * .5)
       gameVignetteSeen = performance.now();
     if (this === ctx && phase >= 2) wxCheck(this, w, h);
+    // Las gotas y copos del juego se pintan justo después de su velo, encima de todo y sin luz: de
+    // noche, a plena intensidad sobre una escena oscura, parecían demasiados. Con la luz, más tenues.
+    if (this === ctx && phase === 3 && wxDrawFrame === frameId && tune.wxDim < 1 && lit()) {
+      const m = this.getTransform();
+      if (Math.abs(w * h * m.a * m.d) < 400) {
+        const ga = this.globalAlpha; this.globalAlpha = ga * tune.wxDim;
+        try { return o.apply(this, arguments); } finally { this.globalAlpha = ga; }
+      }
+    }
     if (recording(this) && isFx(this, this.fillStyle)) {
       fxT(this.getTransform()); fx.fillRect(x, y, w, h);
       atk.globalAlpha = this.globalAlpha; atk.fillStyle = this.fillStyle; atk.fillRect(x, y, w, h);
