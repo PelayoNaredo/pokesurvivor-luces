@@ -226,9 +226,9 @@ if (!window.__psLuzCtx) {
   cv.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;pointer-events:none;display:block';
   game.parentNode.insertBefore(cv, game);
   const gl = cv.getContext('webgl', { alpha: false, antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: false });
-  // la composición final lee 14 texturas a la vez y usa unos 60 vectores de uniformes; WebGL sólo
+  // la composición final lee 14 texturas a la vez y usa unos 80 vectores de uniformes; WebGL sólo
   // garantiza 8 y 16 (móviles muy viejos): sin eso, el juego tal cual
-  if (!gl || gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) < 14 || gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) < 64) { cv.remove(); return; }
+  if (!gl || gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) < 14 || gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) < 96) { cv.remove(); return; }
   // Si el navegador pierde el contexto (móvil en segundo plano, poca memoria) ya no se puede
   // pintar encima: se deja de tocar el canvas del juego y se ve el original, en vez de un
   // mundo en negro con sólo el HUD.
@@ -504,6 +504,7 @@ if (!window.__psLuzCtx) {
     uniform float art,aspect,time,quality,fog,shafts,gi,torchR; uniform vec4 giST;
     uniform vec4 lp[16]; uniform vec3 lc[16]; uniform float nLights;
     uniform vec3 fogCol,torch,moon;
+    uniform vec4 wx; uniform float wfog,canopy; // clima (lluvia, nieve, sol, arena), niebla del clima, copas
     float fbm(vec2 p){float v=0.,a=.5;for(int i=0;i<4;i++){v+=a*noise(p);p=p*2.03+17.1;a*=.5;}return v;}
     float torchAtt(vec2 q){vec2 d=(q-center)*vec2(aspect,1.);float r=length(d)/torchR;return 1./(1.+r*r*4.)*(1.-smoothstep(.15,1.6,r));}
     void main(){
@@ -513,6 +514,9 @@ if (!window.__psLuzCtx) {
       // niebla anclada al mundo (se mueve con el viento, no con la cámara)
       float dens=fbm(wp*.014+vec2(time*.05,time*.018));
       dens=smoothstep(.3,1.,dens)*fog*.55*(1.-.65*bk); // rampa ancha: bordes difusos, sin manchas
+      // clima: la niebla espesa de verdad; la arena, una calima que corre con el viento; la lluvia, algo de bruma
+      float wd=fbm(wp*.02+vec2(time*.4,time*.05));
+      dens=dens*(1.+wfog*1.4+wx.w+wx.x*.3)+wfog*.22+wx.w*.28*smoothstep(.2,.9,wd)+wx.x*.05;
       // haces: de este punto hacia la antorcha y hacia la luna, mirando qué parte está a la sombra
       float sh=0.,sm=0.;
       vec2 vis=texture2D(S,uv).rg;
@@ -520,7 +524,8 @@ if (!window.__psLuzCtx) {
         float j=hash(uv*res+fract(time)*31.);
         for(int i=0;i<10;i++){float t=(float(i)+j)/10.;
           vec2 q=mix(uv,center,t*.9); sh+=texture2D(S,q).g*torchAtt(q);
-          sm+=texture2D(S,uv+vec2(moonDir.x/aspect,moonDir.y)*t*.08).r;}
+          // (con las copas: el haz de luna sólo pasa por los huecos entre las hojas)
+          vec4 sq=texture2D(S,uv+vec2(moonDir.x/aspect,moonDir.y)*t*.08); sm+=sq.r*sq.a;}
         sh/=10.; sm/=10.;
       }else{sh=vis.g*torchAtt(uv);sm=vis.r;}
       // cada luz puntual (fuegos, proyectiles) enciende la niebla a su alrededor: un halo
@@ -530,7 +535,9 @@ if (!window.__psLuzCtx) {
         vec2 dd=(lp[i].xy-uv)*vec2(aspect,1.); float r=lp[i].z*.7;
         halo+=lc[i]*lp[i].w/(1.+dot(dd,dd)/(r*r)*3.);
       }
-      vec3 scatter=fogCol+torch*sh*shafts*.8+moon*sm*.25*shafts+g*.6+halo*1.4;
+      // en el bosque los haces de luna entre las copas se marcan más
+      vec3 fc=mix(fogCol,vec3(.45,.37,.25),wx.w*.8);
+      vec3 scatter=fc+torch*sh*shafts*.8+moon*sm*.25*shafts*(1.+canopy*1.6)+g*.6+halo*1.4;
       gl_FragColor=vec4(scatter*dens,dens);
     }`;
 
@@ -593,10 +600,25 @@ if (!window.__psLuzCtx) {
     uniform float torchR,gi,bloom,shadowK,relief,exposure,vignette,sat,fog,shafts,motes,ao,rim;
     // luces puntuales (capa de sprites): xy en pantalla, radio (en alturas de pantalla), fuerza; y su color
     uniform vec4 lp[16]; uniform vec3 lc[16]; uniform float nLights;
+    // clima (lluvia, nieve, sol abrasador, arena), impactos (centro, edad 0-1, fuerza) y pies en el agua
+    uniform vec4 wx; uniform vec4 shk[4]; uniform vec4 rp[8]; uniform float nRp, tm;
     // toque de cada escenario (ver BIOMES en el JS)
     uniform vec3 liqA,liqB,liqFx,moteCol,flashCol; uniform vec4 bFx,bFx2,bLiq,moteP; uniform float flash;
     uniform vec4 rift; uniform float riftA; // grieta: centro y semiejes en píxeles (y de GL), opacidad
     vec3 aces(vec3 x){return clamp((x*(2.51*x+.03))/(x*(2.43*x+.59)+.14),0.,1.);}
+    // AgX (Troy Sobotka; ajuste polinómico de bwrensch). Sale ya en la misma escala que ACES.
+    vec3 agx(vec3 c){
+      mat3 i=mat3(.842479062253094,.0423282422610123,.0423756549057051,.0784335999999992,.878468636469772,.0784336,.0792237451477643,.0791661274605434,.879142973793104);
+      mat3 o=mat3(1.19687900512017,-.0528968517574562,-.0529716355144438,-.0980208811401368,1.15190312990417,-.0980434501171241,-.0990297440797205,-.0989611768448433,1.15107367264116);
+      c=i*max(c,vec3(1e-10));
+      c=clamp(log2(c),-12.47393,4.026069); c=(c+12.47393)/16.500999;
+      vec3 x2=c*c, x4=x2*x2;
+      c=15.5*x4*x2-40.14*x4*c+31.96*x4-6.868*x2*c+.4298*x2+.1191*c-.00232;
+      c=o*c;
+      // un toque de contraste (look «punchy») y de vuelta a la escala lineal del resto del shader
+      c=pow(max(c,vec3(0.)),vec3(1.12));
+      return clamp(pow(c,vec3(2.2)),0.,1.);
+    }
     float fbm(vec2 p){float v=0.,a=.5;for(int i=0;i<4;i++){v+=a*noise(p);p=p*2.03+17.1;a*=.5;}return v;}
     // Decoración de suelo: sprites de 8×8 píxeles de arte del atlas DECO, uno como mucho por
     // celda de 14×14, anclados al mundo. El color sale del suelo que hay debajo, así que encaja
@@ -641,12 +663,29 @@ if (!window.__psLuzCtx) {
       return vec4(c,smoothstep(h5*.5,h5*.5+.5,decoOn));
     }
     float torchAtt(vec2 q){vec2 d=(q-center)*vec2(aspect,1.);float r=length(d)/torchR;return 1./(1.+r*r*4.)*(1.-smoothstep(.15,1.6,r));}
+    // capa de sprites: material (0 hierba/árbol, 1 Pokémon, 2 roca/objeto, 3 cristal) y altura
+    float matOf(vec4 q){return floor(floor(q.b*255.+.5)/64.);}
+    // Vegetación: cuánto se desplaza (en uv) el píxel de hierba o árbol que hay en p. Más cuanto
+    // más alto está sobre su pie (la copa se mece, el tronco no) y, cerca del jugador, la hierba
+    // se aparta hacia los lados.
+    uniform float wind;
+    vec2 swayAt(vec2 p){
+      vec4 q=texture2D(NB,p);
+      if(q.a<.5||q.b*255.>63.5)return vec2(0.);
+      float h=floor(q.b*255.+.5)*2.;                 // píxeles de arte sobre el pie
+      vec2 wq=(vec2(p.x,1.-p.y)*res-cam)/art;
+      float w=(noise(wq*.003+vec2(time*.3,0.))-.5)*1.4+.3*sin(time*1.9+wq.x*.012+wq.y*.007);
+      float k=min(h,40.)/40.;
+      vec2 dp=(p-center+vec2(0.,.035))*vec2(aspect,1.);
+      float push=(1.-smoothstep(.012,.065,length(dp)))*min(h,12.)/12.*2.5;
+      return vec2((w*k*k*2.4*wind+sign(dp.x)*push)*2.*art/res.x,0.);
+    }
     void main(){
       // aberración cromática leve en los bordes
       vec2 cuv=uv-.5; vec2 ca=cuv*dot(cuv,cuv)*.012;
       // aire que tiembla encima de lo que quema (lava, fuego): sólo donde hay emisión cerca
       vec2 wp0=(vec2(uv.x,1.-uv.y)*res-cam)/art;
-      float hm=smoothstep(.04,.25,lum(texture2D(B1,uv).rgb))*bFx2.x*(1.-bFx2.w);
+      float hm=(smoothstep(.04,.25,lum(texture2D(B1,uv).rgb))*bFx2.x+wx.z*.35)*(1.-bFx2.w);
       vec2 hz=(vec2(noise(wp0*.12+vec2(0.,time*2.6)),noise(wp0*.12+vec2(7.3,time*2.6)))-.5)*hm*1.6*art/res;
       // la grieta: el suelo de alrededor gira despacio hacia ella, como mirado a través de una lente
       vec2 rv=uv*res-rift.xy, rq=rv/rift.zw;
@@ -660,8 +699,32 @@ if (!window.__psLuzCtx) {
       }
       // todo lo que se pinta sobre el suelo (adornos, agua, escarcha) usa esta misma posición
       // deformada, para que gire con el vórtice y tiemble con el calor igual que la imagen del juego
-      vec2 uvD=uv+hz+rz;
-      vec3 alb=texture2D(W,uvD).rgb;
+      // onda de los impactos: un anillo que se abre y deforma un poco la imagen
+      vec2 sk=vec2(0.);
+      for(int i=0;i<4;i++){
+        vec4 k=shk[i]; if(k.w<=0.)continue;
+        vec2 dv=(uv-k.xy)*vec2(aspect,1.); float dd=length(dv), R=k.z*.09;
+        float ring=exp(-pow((dd-R)/.012,2.))*(1.-k.z)*k.w;
+        sk+=dv/(dd+1e-4)*ring*.006*vec2(1./aspect,1.);
+      }
+      vec2 uvD=uv+hz+rz+sk;
+      // la vegetación se mece: se lee la imagen desde donde viene la hoja; donde la hoja se ha ido
+      // se ve el suelo (G). Un Pokémon u objeto delante no se mueve.
+      vec2 sw=vec2(0.); float swG=0.;
+      if(wind>0.&&quality>.5){
+        vec4 n0=texture2D(NB,uv);
+        if(!(n0.a>.5&&n0.b*255.>63.5)){
+          vec2 s0=swayAt(uv);
+          if(s0.x==0.){ vec2 dx=vec2(3.*art/res.x,0.); s0=swayAt(uv-dx); if(s0.x==0.) s0=swayAt(uv+dx); }
+          vec2 s1=swayAt(uv-s0); if(s1.x==0.) s1=s0;
+          vec2 src=uv-s1;
+          vec4 ns=texture2D(NB,src);
+          if(s1.x!=0.&&ns.a>.5&&ns.b*255.<63.5) sw=-s1;
+          else if(n0.a>.5) swG=1.;
+        }
+      }
+      vec3 alb=texture2D(W,uvD+sw).rgb;
+      if(swG>.5) alb=texture2D(G,uvD).rgb;
       if(dot(ca*res,ca*res)>.04) alb=vec3(texture2D(W,uvD+ca).r,alb.g,texture2D(W,uvD-ca).b);
       // su núcleo oscuro (#140a26) se abre a otro sitio: nebulosa que se mueve y estrellas que titilan
       float core=0.; vec3 neb=vec3(0.);
@@ -727,8 +790,8 @@ if (!window.__psLuzCtx) {
       float hd=lum(texture2D(W,uv-vec2(0,o.y)).rgb), hu=lum(texture2D(W,uv+vec2(0,o.y)).rgb);
       vec3 n=normalize(vec3((hl-hr)*relief*3.,(hd-hu)*relief*3.,1.));
       // en los sprites manda su normal (capa de sprites): la luz les da volumen, no sólo brillo
-      vec4 nb=texture2D(NB,uv);
-      float onSpr=step(.5,nb.a);
+      vec4 nb=texture2D(NB,uv+sw);
+      float onSpr=step(.5,nb.a)*(1.-swG);
       // Luz por píxel de arte: en el suelo, toda la luz (sombras, antorcha, luces, luz rebotada,
       // oclusión) se mira en el centro del píxel de arte del mundo, así cada píxel del dibujo queda
       // de un solo tono en vez de cruzado por un degradado fino (que delataba un filtro encima).
@@ -743,6 +806,22 @@ if (!window.__psLuzCtx) {
       vec3 sn=vec3(sxy,sqrt(max(0.,1.-dot(sxy,sxy))));
       n=normalize(mix(n,sn,onSpr*.85));
       float ndl=max(dot(n,normalize(vec3(moonDir,.9))),0.);
+      // ---- clima ----
+      // lluvia: el suelo mojado se oscurece y forma charcos (siempre en los mismos sitios del mundo)
+      float puddle=0.;
+      if(wx.x>.01){
+        // (en coordenadas finas del mundo: con píxeles de arte salían bordes en escalera)
+        puddle=smoothstep(.68,.74,noise(wp*.045)+noise(wp*.11)*.22)*(1.-onSpr)*(1.-liq);
+        alb*=1.-wx.x*.16*(1.-onSpr);
+        // el charco refleja el cielo nocturno: más oscuro y azulado, pero se sigue viendo el suelo
+        alb=mix(alb,alb*.5+vec3(.03,.05,.09),puddle*wx.x*.65);
+      }
+      // nieve: blanquea lo que mira hacia arriba (copas, rocas, lomos) y el suelo a manchas
+      if(wx.y>.01){
+        // (conserva el dibujo de debajo: la nieve toma su luminosidad, no lo tapa con un blanco plano)
+        float cover=onSpr>.5?smoothstep(.2,.6,sxy.y)*.7:(.3+.25*smoothstep(.3,.8,noise(pa*.03)))*(1.-liq);
+        alb=mix(alb,vec3(.86,.9,.98)*(.72+.6*lum(alb)),cover*wx.y);
+      }
 
       vec2 vis=texture2D(S,uvL).rg;
       float moonVis=mix(1.,vis.r,shadowK);
@@ -780,7 +859,9 @@ if (!window.__psLuzCtx) {
       // un poco por encima del suelo. Cae con la distancia como una luz real (cuadrado inverso,
       // suavizado) y a los sprites los ilumina por el lado que mira hacia ella (su normal).
       vec3 pl=vec3(0.), ps=vec3(0.);
-      float matS=nb.b*onSpr, shin=10.+nb.b*60.;
+      // brillo del material, más en lo claro que en lo oscuro del mismo sprite
+      float mi=matOf(nb), mb=mi<.5?.1:mi<1.5?.14:mi<2.5?.38:.95;
+      float matS=mb*(.35+.65*lum(alb))*onSpr, shin=10.+mb*60.;
       for(int i=0;i<16;i++){
         if(float(i)>=nLights)break;
         vec4 L=lp[i];
@@ -789,7 +870,14 @@ if (!window.__psLuzCtx) {
         vec3 Ld=normalize(vec3(d,r*.35));
         float fall=1./(1.+dist*dist/(r*r)*2.)*(1.-smoothstep(r*1.6,r*3.,dist));
         float fl=1.+bFx.w*.25*sin(time*(9.+float(i)*1.7)+float(i)*4.1)*sin(time*5.3+float(i));
-        pl+=lc[i]*L.w*fall*fl*mix(.4+.6*max(dot(n,Ld),0.),max(dot(n,Ld),0.)*1.2,onSpr);
+        // las dos luces más fuertes proyectan sombra: del suelo hacia la luz, ¿se cruza algún sprite?
+        float lsh=1.;
+        if(i<2&&quality>1.5&&onSpr<.5&&fall>.03){
+          vec2 to=L.xy-uvL; float oc=0.;
+          for(int k=1;k<=8;k++){ float tt=float(k)/10.; oc=max(oc,texture2D(NB,uvL+to*tt).a*(1.-tt)); }
+          lsh=1.-min(1.,oc*1.4)*.8;
+        }
+        pl+=lc[i]*L.w*fall*fl*lsh*mix(.4+.6*max(dot(n,Ld),0.),max(dot(n,Ld),0.)*1.2,onSpr);
         if(matS>.01) ps+=lc[i]*L.w*fall*pow(max(dot(n,normalize(Ld+vec3(0.,0.,1.))),0.),shin);
       }
       vec3 light=ambient*aoF*(.7+.3*moonVis)+pl
@@ -841,8 +929,42 @@ if (!window.__psLuzCtx) {
         sky+=(moon*moonVis*.22+ambient*.14)*cloud*(1.-mirOn*.6)-ambient*.05*(1.-cloud);
         col+=liq*bLiq.w*(sheen*(moon*moonVis*.35+torch*att*.6)+sky+rl*1.2);
       }
+      // charcos: espejos de la luz que tienen cerca (antorcha, fuegos, luna) y ondas de las gotas
+      if(puddle>.01){
+        // gotas: un anillo que se abre (con posición fina, no por píxel: salían cuadraditos)
+        vec2 rc=floor(wp/14.); float rh=hash(rc+.3), rt=fract(time*1.6+rh*9.);
+        vec2 rpp=(rc+.25+.5*vec2(hash(rc+2.1),hash(rc+4.7)))*14.;
+        float pr=smoothstep(.9,0.,abs(length(wp-rpp)-rt*5.))*(1.-rt)*step(.55,rh);
+        // brillo: sólo donde la luz rebota de verdad hacia nosotros (puntos, no manchas)
+        float gl2=smoothstep(.6,.85,noise(pa*.35+vec2(time*.5,0.)));
+        col+=wx.x*puddle*((torch*att*.5+pl*.6+moon*moonVis*.2)*gl2+pr*(moon*moonVis*.35+torch*att*.5+.03));
+      }
+      // agua: la luna se refleja como un disco que tiembla con las olas, espuma en la orilla y
+      // ondas a los pies de lo que se mete en el agua
+      if(liq>.05&&bLiq.w>.1){
+        vec2 mpos=vec2(.5,.5)-vec2(moonDir.x/aspect,moonDir.y)*.32;
+        vec2 dm=(uv-mpos)*vec2(aspect,1.)+vec2(sin(wp.y*.5+time*2.)*.006,0.);
+        float disc=exp(-dot(dm,dm)/.0035)*(.6+.4*noise(pa*.4+time*1.5));
+        col+=liq*moon*moonVis*disc*1.1*bLiq.w;
+        float e4=min(min(texture2D(LQ,uvD+vec2(o.x*3.,0.)).r,texture2D(LQ,uvD-vec2(o.x*3.,0.)).r),min(texture2D(LQ,uvD+vec2(0.,o.y*3.)).r,texture2D(LQ,uvD-vec2(0.,o.y*3.)).r));
+        float foam=(1.-smoothstep(.3,.9,e4))*smoothstep(.45,.75,noise(pa*.35+vec2(time*.6,time*.2)));
+        col=mix(col,vec3(.85,.92,1.)*(light*.9+.08),liq*foam*.45*min(1.,bLiq.w*1.5));
+        for(int i=0;i<8;i++){
+          if(float(i)>=nRp)break;
+          vec2 dv=(uv-rp[i].xy)*vec2(aspect,1.); float dd=length(dv)/rp[i].z;
+          float ring=max(0.,sin(dd*28.-time*7.))*exp(-dd*2.2)*step(.15,dd);
+          col+=liq*ring*.10*(moon*moonVis+torch*att+.1)*step(.5,texture2D(LQ,rp[i].xy).r);
+        }
+      }
+      // ---- clima sobre la luz ----
+      col*=mix(vec3(1.),vec3(.86,.92,1.04),wx.x*.7);   // lluvia: más frío y apagado
+      col*=mix(vec3(1.),vec3(.95,.98,1.06),wx.y*.6);   // nieve: luz fría y limpia
+      col*=mix(vec3(1.),vec3(1.12,1.04,.86),wx.z*.6);  // sol abrasador: luz blanca y cálida
+      col*=mix(vec3(1.),vec3(1.08,.98,.82),wx.w*.6);   // arena: amarillenta
+      // arena: ráfagas que barren el suelo con el viento
+      if(wx.w>.01){ float st=smoothstep(.65,.9,noise(vec2(wp.x*.02-time*2.2,wp.y*.25)))*wx.w; col=mix(col,vec3(.8,.68,.48)*(light*.8+.15),st*.35); }
       // escarcha / polvo de cristal: destellos sueltos en el suelo que se encienden y apagan
-      float frost=step(.994,hash(pa*1.7+floor(time*2.5)))*(1.-liq)*(1.-above)*bFx2.y;
+      float frost=step(.994-wx.y*.001,hash(pa*1.7+floor(time*2.5)))*(1.-liq)*(1.-above)*min(1.,bFx2.y+wx.y);
       col+=frost*(vec3(.45,.5,.55)+torch*att+moon*moonVis*.6);
 
       // niebla y haces de luz (pasada aparte a 1/4 de resolución, ver FS_VOL)
@@ -871,7 +993,7 @@ if (!window.__psLuzCtx) {
       }
 
       // tonemap, sin tonemap encima de los emisores (una calabaza no vira a amarillo)
-      col=aces(col*exposure*(1.-.3*bk));
+      col=tm>.5?agx(col*exposure*(1.-.3*bk)):aces(col*exposure*(1.-.3*bk));
       col=mix(col,alb*(.62+.25*light),bk*.42); // en escenas claras manda más el color del juego
       col=mix(col,alb,em*.85);
       // Los sprites conservan su color: con mucha luz cálida y la curva de tonos, un Gastly morado
@@ -895,7 +1017,7 @@ if (!window.__psLuzCtx) {
       if(dbg>2.5&&dbg<3.5)col=m.rgb+b;
       if(dbg>3.5&&dbg<4.5)col=g;
       if(dbg>4.5&&dbg<5.5)col=vec3(dens)+scatter*dens;
-      if(dbg>5.5)col=nb.a>.5?vec3(nb.rg,nb.b*2.):vec3(texture2D(S,uv).rgb*.5);
+      if(dbg>5.5)col=nb.a>.5?vec3(nb.rg,matOf(nb)/3.):vec3(texture2D(S,uv).rgb*.5);
       gl_FragColor=vec4(col,1.);
     }`;
 
@@ -1143,6 +1265,14 @@ if (!window.__psLuzCtx) {
   }
   // La rejilla de sondas va anclada al mundo (se corre con la cámara, en múltiplos de la
   // separación más grande): con la rejilla fija en pantalla, la luz rebotada temblaba al andar.
+  const rpBuf = new Float32Array(32); let nRp = 0;
+  function feetUniform(w, h) {
+    const idx = [];
+    for (let i = 0; i < feet.length; i += 3) idx.push(i);
+    idx.sort((a, b) => Math.hypot(feet[a] - w * .5, feet[a + 1] - h * .48) - Math.hypot(feet[b] - w * .5, feet[b + 1] - h * .48));
+    nRp = Math.min(8, idx.length); rpBuf.fill(0);
+    for (let j = 0; j < nRp; j++) { const i = idx[j]; rpBuf.set([feet[i] / w, 1 - feet[i + 1] / h, Math.max(.02, feet[i + 2] / h * 1.2), 0], j * 4); }
+  }
   let giST = [1, 1, 0, 0];
   function radianceCascades(now, flick) {
     const qw = T.q.w, qh = T.q.h, pw = T.giOut.w, ph = T.giOut.h, N = 5, per = 2 * 2 ** (N - 1);
@@ -1181,6 +1311,8 @@ if (!window.__psLuzCtx) {
     frame++;
     const center = [0.5, 0.52];
     floorStats(now);
+    wxUpdate(Math.min(.1, (now - (render.lastWx || now)) / 1000)); render.lastWx = now;
+    impactsUpdate(now);
 
     // escenario: el que más suelo hay en pantalla (última lectura); fundido entre uno y otro
     const dt = Math.min(.1, (now - (render.last || now)) / 1000); render.last = now;
@@ -1296,6 +1428,7 @@ if (!window.__psLuzCtx) {
         gl.uniform3fv(u.liqA, liq[0]); gl.uniform3fv(u.liqB, liq[1]);
       });
     }
+    impactLights(now); feetUniform(w, h);
     pass(P.vol, T.vol, [['S', T.shadow.t], ['GI', T.giOut.t], ['EXPO', aOut.t]], u => {
       gl.uniform2f(u.res, w, h); gl.uniform2f(u.cam, camE, camF);
       gl.uniform2f(u.moonDir, S.moonDir[0], S.moonDir[1]); gl.uniform2f(u.center, center[0], center[1]);
@@ -1305,11 +1438,17 @@ if (!window.__psLuzCtx) {
       for (const k of ['fogCol', 'torch', 'moon']) gl.uniform3fv(u[k], S[k]);
       gl.uniform4fv(u.giST, giST);
       setLights(u, w, h);
+      gl.uniform4f(u.wx, wxCur[1], wxCur[3], wxCur[0], wxCur[2]); gl.uniform1f(u.wfog, wxCur[4]); gl.uniform1f(u.canopy, bio.canopy);
     });
     blur(T.vol, T.volTmp); // (el ruido de los haces, que antes quedaba por píxel)
     pass(P.comp, null, [['W', texW], ['S', T.shadow.t], ['M', T.prep.t], ['GI', T.giOut.t],
       ['B1', T.e8.t], ['B2', T.e16.t], ['B3', T.e32.t], ['NB', texNB], ['G', texG], ['DECO', texDeco], ['EXPO', aOut.t], ['VOL', T.vol.t], ['LQ', T.liq.t], ['DC', TDC.t]], u => {
       gl.uniform4fv(u.giST, giST);
+      gl.uniform4f(u.wx, wxCur[1], wxCur[3], wxCur[0], wxCur[2]);
+      if (u['shk[0]']) gl.uniform4fv(u['shk[0]'], shkBuf);
+      if (u['rp[0]']) gl.uniform4fv(u['rp[0]'], rpBuf);
+      gl.uniform1f(u.nRp, nRp); gl.uniform1f(u.tm, tune.tm);
+      gl.uniform1f(u.wind, calm || !tune.sway ? 0 : .8 + wxCur[1] * .5 + wxCur[2] * .9);
       gl.uniform1f(u.pixK, tune.pix ? 1 : 0); gl.uniform1f(u.bandK, tune.bands); gl.uniform1f(u.clouds, calm ? bio.clouds * .5 : bio.clouds);
       gl.uniform2f(u.cell0, cell0[0], cell0[1]);
       gl.uniform1f(u.decoOn, decoOn ? decoFade * decoFade * (3 - 2 * decoFade) : 0);
@@ -1390,7 +1529,7 @@ if (!window.__psLuzCtx) {
   let onFrame = null; // gancho de pruebas: se llama con el frame ya pintado (aún legible)
   // jmode 2: ruido anclado al mundo (no titila al mover la cámara). Medido con _test/flicker.js:
   // la mezcla temporal deja el parpadeo de las sombras en movimiento entre 2 y 4 veces más bajo.
-  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true, giK: .55, pix: true, bands: .35 };
+  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true, giK: .55, pix: true, bands: .35, tm: 1, wx: null, sway: true };
 
   function snap(t) {
     if (tune.skip && tune.skip.snap) return;
@@ -1458,6 +1597,7 @@ if (!window.__psLuzCtx) {
     'globalAlpha', 'globalCompositeOperation', 'shadowColor', 'shadowBlur', 'shadowOffsetX', 'shadowOffsetY', 'direction'];
   const texts = [];
   function deferText(c, fn, args) {
+    if (fn === _fillText) noteNumber(c, args);
     const st = { m: c.getTransform(), fn, args };
     for (const k of TEXT_STATE) st[k] = c[k];
     texts.push(st);
@@ -1475,6 +1615,69 @@ if (!window.__psLuzCtx) {
   }
   C2.fillText = function () { if (this === ctx && phase === 2 && lit()) { deferText(this, _fillText, [...arguments]); return; } return _fillText.apply(this, arguments); };
   C2.strokeText = function () { if (this === ctx && phase === 2 && lit()) { deferText(this, _strokeText, [...arguments]); return; } return _strokeText.apply(this, arguments); };
+
+  // ---------- clima ----------
+  // Cada clima del juego tiñe la pantalla con un velo de un color fijo (sol, lluvia, arena, nieve,
+  // niebla): así se sabe cuál hay sin depender del idioma del texto. La intensidad sale de su alfa.
+  const WX = [[255, 190, 90, .07], [50, 90, 170, .09], [200, 160, 90, .09], [210, 230, 255, .08], [190, 195, 210, .12]];
+  const wxSeen = new Float32Array(5), wxCur = new Float32Array(5); let wxFrame = -1;
+  function wxCheck(c, w, h) {
+    const st = c.fillStyle;
+    if (typeof st !== 'string' || !st.startsWith('rgba(')) return;
+    const m = c.getTransform();
+    if (Math.abs(w * h * m.a * m.d) < game.width * game.height * .5) return;
+    const p = st.slice(5, -1).split(',').map(Number);
+    for (let k = 0; k < WX.length; k++) {
+      if (p[0] !== WX[k][0] || p[1] !== WX[k][1] || p[2] !== WX[k][2]) continue;
+      if (wxFrame !== frameId) { wxSeen.fill(0); wxFrame = frameId; }
+      wxSeen[k] = Math.min(1, p[3] * c.globalAlpha / WX[k][3]);
+    }
+  }
+  function wxUpdate(dt) { // fundido de ~1,5 s al empezar y al acabar
+    const f = tune.wx;
+    for (let k = 0; k < 5; k++) {
+      const t = f ? f[k] || 0 : wxFrame === frameId ? wxSeen[k] : 0;
+      wxCur[k] += (t - wxCur[k]) * Math.min(1, dt * 1.4);
+    }
+  }
+
+  // ---------- impactos ----------
+  // Cada número de daño nuevo es un golpe: un destello breve de luz en ese punto y una onda que
+  // deforma un poco el aire. (Los números siguen pintándose unos frames mientras suben: se da por
+  // nuevo el que no tenía uno igual cerca en el frame anterior.)
+  let nums = [], prevNums = [];
+  const impacts = [];
+  function noteNumber(c, args) {
+    const t = String(args[0]);
+    if (!/^[-+]?\d{1,6}!?$/.test(t)) return;
+    const m = c.getTransform(), x = +args[1] || 0, y = +args[2] || 0;
+    nums.push(t, m.a * x + m.c * y + m.e, m.b * x + m.d * y + m.f + 14 * Math.abs(m.d), String(c.fillStyle));
+  }
+  function impactsUpdate(now) {
+    for (let i = 0; i < nums.length; i += 4) {
+      let seen = false;
+      for (let j = 0; j < prevNums.length; j += 4)
+        if (prevNums[j] === nums[i] && Math.abs(prevNums[j + 1] - nums[i + 1]) < 40 && Math.abs(prevNums[j + 2] - nums[i + 2]) < 60) { seen = true; break; }
+      if (seen) continue;
+      const col = /^#[0-9a-f]{6}$/i.test(nums[i + 3]) ? [1, 3, 5].map(k => parseInt(nums[i + 3].substr(k, 2), 16) / 255) : [1, .85, .6];
+      const mx = Math.max(...col, .2);
+      const v = Math.abs(parseInt(nums[i], 10)) || 1;
+      impacts.push({ x: nums[i + 1], y: nums[i + 2], t: now, c: col.map(q => q / mx), k: Math.min(1, .35 + Math.log10(v) * .25) });
+      if (impacts.length > 6) impacts.shift();
+    }
+    prevNums = nums; nums = [];
+    for (let i = impacts.length - 1; i >= 0; i--) if (now - impacts[i].t > 450) impacts.splice(i, 1);
+  }
+  const shkBuf = new Float32Array(16);
+  function impactLights(now) {
+    shkBuf.fill(0);
+    let j = 0;
+    for (let i = impacts.length - 1; i >= 0; i--) {
+      const im = impacts[i], a = (now - im.t) / 450, e = Math.exp(-a * 5);
+      lights.push(im.x, im.y, 110 + 60 * im.k, 1.1 * im.k * e, im.c[0], im.c[1], im.c[2]);
+      if (j < 4 && !calm) { shkBuf.set([im.x / game.width, 1 - im.y / game.height, a, im.k], j * 4); j++; }
+    }
+  }
 
   // El juego pinta su propia viñeta (un degradado a pantalla completa) encima del mundo: si la
   // hay, la del shader se reduce para no oscurecer los bordes dos veces.
@@ -1538,6 +1741,7 @@ if (!window.__psLuzCtx) {
   C2.fillRect = (o => function (x, y, w, h) {
     if (this === ctx && phase === 3 && depth === 0 && typeof this.fillStyle !== 'string' && w * h * this.getTransform().a ** 2 > game.width * game.height * .5)
       gameVignetteSeen = performance.now();
+    if (this === ctx && phase >= 2) wxCheck(this, w, h);
     if (recording(this) && isFx(this, this.fillStyle)) {
       fxT(this.getTransform()); fx.fillRect(x, y, w, h);
       atk.globalAlpha = this.globalAlpha; atk.fillStyle = this.fillStyle; atk.fillRect(x, y, w, h);
@@ -1548,7 +1752,7 @@ if (!window.__psLuzCtx) {
   // ---------- capa de sprites: sombras con su forma real y normales (G-buffer) ----------
   // Cada sprite que el juego pinta sobre el suelo (Pokémon, árboles, rocas, hierba, objetos) se
   // repite aquí, con su misma transformación, en tres capas:
-  //  · normales (rg: hacia dónde mira cada píxel; b: cuánto brilla su material; a: hay sprite), a
+  //  · normales (rg: hacia dónde mira cada píxel; b: material ×64 + altura sobre el pie /2; a: hay sprite), a
   //    media resolución (a completa costaba subirla a la GPU cada frame y no se notaba). La normal sale de inflar la silueta (bordes redondeados) y de su
   //    propio sombreado pintado, como hacen SpriteIlluminator o Laigter con los sprites 2D.
   //  · sombra de la luna y sombra de la antorcha, a media resolución: la silueta del sprite
@@ -1570,17 +1774,22 @@ if (!window.__psLuzCtx) {
   const sprInfo = new WeakMap(); // imagen → Map(recorte → datos del sprite, o null si está vacío)
   let sprOn = false, moonOx = .5, moonOy = .75, sprT = 0, sprCount = 0, sprNew = 0;
   const blobs = []; // manchas de contacto del frame: escala x, escala y, centro x, centro y
+  const feet = [];  // pies del frame (x, y en pantalla, ancho): para las ondas en el agua
   const lights = []; // luces puntuales del frame: [x, y, radio, fuerza, r, g, b] en píxeles de pantalla
   // Un sprite que brilla (llamas, brasas, gemas) se convierte en una luz puntual en el centro de
   // lo que brilla, de su color. El jugador no: ya lleva su propia luz.
   function sprLight(m, d, dx, dy, kx, ky, ga) {
-    if (!d.ecol || d.emit < .1) return;
+    // (un Pokémon de fuego tiene poca llama en proporción a su cuerpo: basta menos para alumbrar)
+    if (!d.ecol || d.emit < (d.isImg ? .025 : .1)) return;
+    // (un Pokémon amarillo o naranja entero, como Pikachu, no es una llama: si lo que brilla ocupa más
+    // de un cuarto del sprite, es el color de su cuerpo)
+    if (d.isImg && d.emit > .25) return;
     const lx = dx + d.ecx * kx, ly = dy + d.ecy * ky;
     const x = m.a * lx + m.c * ly + m.e, y = m.b * lx + m.d * ly + m.f;
     if (Math.hypot(x - game.width * .5, y - game.height * .48) < artScale * 12) return;
     const size = Math.max(d.fr - d.fl + 1, d.foot - d.top + 1) * Math.max(kx, ky) * Math.hypot(m.a, m.b);
     const mx = Math.max(...d.ecol, .01);
-    lights.push(x, y, Math.max(50, Math.min(220, size * 2)), Math.min(.9, d.emit * 2.5) * ga, d.ecol[0] / mx, d.ecol[1] / mx, d.ecol[2] / mx);
+    lights.push(x, y, Math.max(50, Math.min(220, size * (d.isImg ? 1.5 : 2))), (d.isImg ? Math.min(.6, .18 + d.emit * 3) : Math.min(.9, d.emit * 2.5)) * ga, d.ecol[0] / mx, d.ecol[1] / mx, d.ecol[2] / mx);
   }
   // proyectiles y efectos centrados (girados): sólo su luz, ni sombra ni normales
   function sprLightOnly(c, img, dx, dy, dw, dh) {
@@ -1657,8 +1866,9 @@ if (!window.__psLuzCtx) {
     // material (cuánto brilla al reflejar la luz): cristal mucho, gemas y objetos bastante, roca
     // algo, hojas y hierba poco, Pokémon poco (pelo, escamas mates)
     const dims = img.width + 'x' + img.height;
-    const mat = img instanceof HTMLImageElement ? .14 : dims === '26x40' ? .95 : dims === '22x17' ? .4 :
-      (dims === '30x40' || dims === '28x40' || dims === '20x17') ? .1 : .35;
+    // 0 hierba y árboles (se mecen) · 1 Pokémon · 2 roca y otros objetos · 3 cristal
+    const matIdx = img instanceof HTMLImageElement ? 1 : dims === '26x40' ? 3 :
+      (dims === '30x40' || dims === '28x40' || dims === '20x17') ? 0 : 2;
     // ¿brilla? (lo muy claro y saturado: llamas, brasas, gemas). Fracción, color y centro de lo que brilla
     const sst = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
     let ew = 0, er = 0, eg = 0, eb = 0, ex = 0, ey = 0, opaque = 0;
@@ -1680,14 +1890,12 @@ if (!window.__psLuzCtx) {
       let nx = -(z(k + 1, y) - z(k - 1, y)) * .5, ny = (z(k, y + 1) - z(k, y - 1)) * .5;
       const l = Math.hypot(nx, ny, 1); nx /= l; ny /= l;
       const hgt = Math.min(255, (foot - y) * 2); // altura sobre el pie, en píxeles de arte ×2
-      // (lo claro brilla más que lo oscuro del mismo material)
-      const lu = (.299 * px[i * 4] + .587 * px[i * 4 + 1] + .114 * px[i * 4 + 2]) / 255;
-      N[i * 4] = (nx * .5 + .5) * 255; N[i * 4 + 1] = (ny * .5 + .5) * 255; N[i * 4 + 2] = mat * (.35 + .65 * lu) * 255; N[i * 4 + 3] = 255;
+      N[i * 4] = (nx * .5 + .5) * 255; N[i * 4 + 1] = (ny * .5 + .5) * 255; N[i * 4 + 2] = matIdx * 64 + Math.min(63, Math.round((foot - y) / 2)); N[i * 4 + 3] = 255;
       Sd[i * 4] = 255; Sd[i * 4 + 1] = hgt; Sd[i * 4 + 3] = 255;
     }
     // (éstos sí, en la GPU: se dibujan cientos de veces por frame)
     nrm.getContext('2d', { willReadFrequently: false }).putImageData(ni, 0, 0); sil.getContext('2d', { willReadFrequently: false }).putImageData(si, 0, 0);
-    return { foot, top, fl, fr, nrm, sil, emit, ecol, ecx, ecy };
+    return { foot, top, fl, fr, nrm, sil, emit, ecol, ecx, ecy, isImg: img instanceof HTMLImageElement };
   }
   function spriteData(img, sx, sy, sw, sh) {
     let byRect = sprInfo.get(img);
@@ -1729,7 +1937,7 @@ if (!window.__psLuzCtx) {
     nbx.clearRect(0, 0, hw, hh);
     // Las siluetas se pintan una encima de otra (la última manda en la altura). Un modo de mezcla
     // como «lighten» obliga al canvas a leer lo ya pintado en cada dibujo y costaba un 25 % de fps.
-    blobs.length = 0; lights.length = 0;
+    blobs.length = 0; lights.length = 0; feet.length = 0;
     // dirección de la sombra de la luna en el canvas (y hacia abajo), 0,9 veces la altura. Con
     // la luz casi de lado la silueta se aplastaría en una raya: los objetos tienen fondo.
     const md = shown.moonDir, ml = Math.hypot(md[0], md[1]) || 1;
@@ -1748,6 +1956,7 @@ if (!window.__psLuzCtx) {
     if (tune.nb && ga > .9) { nbx.setTransform(m.a * .5, 0, 0, m.d * .5, m.e * .5, m.f * .5); _draw.call(nbx, d.nrm, 0, 0, sw, sh, dx, dy, dw, dh); }
     sprLight(m, d, dx, dy, kx, ky, ga);
     const Fy = dy + (d.foot + 1) * ky, Fx = dx + (d.fl + d.fr + 1) * .5 * kx; // pie, en unidades del juego
+    if (d.isImg && feet.length < 240) feet.push(m.a * Fx + m.e, m.d * Fy + m.f, (d.fr - d.fl + 1) * kx * m.a);
     const a = m.a * .5, dd = m.d * .5, e = m.e * .5, f = m.f * .5;          // a media resolución
     // (x, y) → (x + ox·(Fy − y), Fy + oy·(Fy − y)): el pie se queda, lo alto se aleja
     const cast = (x2, ox, oy, al) => {
@@ -1915,6 +2124,7 @@ if (!window.__psLuzCtx) {
     capas: { luna: smCv, antorcha: stCv, normales: nbCv },
     // tiempo de GPU por pasada, en ms por frame (PS_LUZ.tune.prof = true para medir)
     get perfil() { const o = {}; let tot = 0; for (const k in prof) { o[k] = +(prof[k] / Math.max(1, profFrames)).toFixed(3); tot += prof[k]; } o.total = +(tot / Math.max(1, profFrames)).toFixed(2); return o; },
+    get clima() { return { sol: +wxCur[0].toFixed(2), lluvia: +wxCur[1].toFixed(2), arena: +wxCur[2].toFixed(2), nieve: +wxCur[3].toFixed(2), niebla: +wxCur[4].toFixed(2) }; },
     get suelo() { const o = {}; BIOMES.forEach((b, i) => { if (frameFloor[i] > 1) o[b.id] = Math.round(frameFloor[i]); }); return { escenarios: o, decoFade: +decoFade.toFixed(2), grassRatio }; },
     perfilReset() { for (const k in prof) delete prof[k]; profFrames = 0; }
   };

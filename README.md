@@ -96,6 +96,20 @@ On the extensions page, click **Remove** on the extension's card. You can then d
   and steps in soft bands, like hand-shaded pixel art, instead of a smooth filter on top.
 - **Materials:** crystals and gems glint, rocks shine a little, fur and leaves stay matte.
 - **Clouds** drift over the moon and slide huge, slow shadows across open areas.
+- **The game's weather comes alive:** rain wets the ground, with puddles that reflect the light
+  and rings from the drops; snow settles on treetops, rocks and the ground; harsh sun makes the
+  air shimmer; sandstorms sweep gusts across the ground; fog really thickens.
+- **Living vegetation:** tall grass and treetops sway in the wind (harder in storms) and the
+  grass parts as you walk through it.
+- **Fire casts shadows:** the two strongest lights (fireballs, lava) cast shadows of whatever
+  stands in their way.
+- **Hits you can feel:** every hit flashes light around it and sends a small ripple through
+  the air.
+- **Moonlight through the trees:** in the forest, moonbeams slip through the gaps in the leaves.
+- **More water detail:** the moon reflects as a disc that wobbles with the waves, foam moves
+  along the shore and ripples spread around anything standing in the water.
+- **Cinematic colour:** AgX tone mapping (the one Blender uses) keeps strong colours rich
+  instead of washing them out.
 - **Soft fog with light shafts**, floating particles and rim light on characters.
 - **Living water:** caustics, bubbles, glints, drifting clouds reflected on the whole surface,
   and reflections of whatever stands on the water or by its shore.
