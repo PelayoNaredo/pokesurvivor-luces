@@ -517,7 +517,7 @@ if (!window.__psLuzCtx) {
       float wd=fbm(wp*.02+vec2(time*.4,time*.05));
       // la niebla del clima se cierra con la distancia: cerca del jugador se ve, lejos no
       float far=smoothstep(.12,.55,length((uv-center)*vec2(aspect,1.)));
-      dens=dens*(1.+wfog*1.2+wx.w+wx.x*.3)+wfog*(.1+.4*far)+wx.w*(.25+.45*smoothstep(.15,.85,wd))+wx.x*.05;
+      dens=dens*(1.+wfog*1.2+wx.w+wx.x*.3)+wfog*(.1+.4*far)+wx.w*(.15+.35*smoothstep(.15,.85,wd))+wx.x*.05;
       // haces: de este punto hacia la antorcha y hacia la luna, mirando qué parte está a la sombra
       float sh=0.,sm=0.;
       vec2 vis=texture2D(S,uv).rg;
@@ -993,7 +993,7 @@ if (!window.__psLuzCtx) {
       col*=mix(vec3(1.),vec3(.95,.98,1.05),max(wx.y,snw)*.5); // nieve: luz fría y limpia
       col*=mix(vec3(1.),vec3(1.1,1.03,.88),wx.z*.55);  // sol abrasador: luz blanca y cálida
       col*=mix(vec3(1.),vec3(1.14,.98,.76),wx.w*.75);  // arena: amarillenta y con menos contraste
-      col=mix(col,vec3(.72,.58,.38)*(lum(col)*.6+.25),wx.w*.22); // (calima: el aire está lleno de polvo)
+      col=mix(col,vec3(.72,.58,.38)*(lum(col)*.6+.25),wx.w*.18*(1.-.5*onSpr)); // (calima: el aire está lleno de polvo)
       // con nieve, las sombras se vuelven azules (el cielo se refleja en la nieve)
       col=mix(col,col*vec3(.82,.9,1.12),snw*shAmt*.6);
       // arena: nubes de polvo que pasan con el viento (bandas largas y deshilachadas, no rayas) y
@@ -1002,7 +1002,8 @@ if (!window.__psLuzCtx) {
         vec2 wq=wp*vec2(.012,.03)+vec2(-time*.9,0.);
         float dust=smoothstep(.3,.8,noise(wq)*.6+noise(wq*2.7+vec2(time*.3,0.))*.4)*wx.w;
         // (sobre los sprites, algo menos: si no, árboles y Pokémon parecían fantasmas)
-        col=mix(col,vec3(.86,.68,.42)*(light*.7+.22),dust*.6*(1.-.45*onSpr));
+        // el polvo tapa la luz y tiñe: oscurece hacia el ocre, no lo blanquea todo
+        col=mix(col,col*vec3(.92,.76,.54)+vec3(.06,.04,.02)*(light+.3),dust*.7*(1.-.35*onSpr));
         // granos: dos capas a distinta velocidad (los cercanos van más rápido)
         for(int k=0;k<2;k++){
           float sp=6.+float(k)*5.;
@@ -1048,7 +1049,9 @@ if (!window.__psLuzCtx) {
       // Los sprites conservan su color: con mucha luz cálida y la curva de tonos, un Gastly morado
       // junto al jugador se quedaba rosa pálido. Se mantiene su brillo y se le devuelve el tono.
       float lc=lum(col), la=max(lum(alb),.04);
-      col=mix(col,clamp(alb*(lc/la),0.,1.),smoothstep(.3,.8,occ)*.55);
+      // (no en lo casi negro, como los contornos: si la niebla o el polvo los aclaraban, al devolverles
+      // su color se multiplicaba muchísimo y salían verde chillón; y menos cuanto más cargado está el aire)
+      col=mix(col,clamp(alb*min(lc/la,2.2),0.,1.),smoothstep(.3,.8,occ)*.55*smoothstep(.05,.18,lum(alb))*(1.-.75*max(wx.w,wx2.z)));
       col=mix(col,neb,core); // el interior de la grieta brilla por sí mismo, no lo apaga la noche
       float l=lum(col);
       col*=mix(lowTint,highTint,smoothstep(.15,.7,l));
