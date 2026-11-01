@@ -698,18 +698,38 @@ if (!window.__psLuzCtx) {
 
   // 7) efecto maqueta (opcional): desenfoque suave arriba y abajo de la pantalla, como una foto
   // con poca profundidad de campo de una maqueta. El centro, donde está el jugador, queda nítido.
-  const FS_TILT = HEAD + `uniform sampler2D T; uniform vec2 px;
+  const FS_TILT = HEAD + `uniform sampler2D T; uniform vec2 px; uniform float focus,maxR;
+    // Como una lente basculante de verdad: el plano enfocado pasa por el jugador y el desenfoque
+    // (círculo de confusión) crece en línea recta con la distancia a él. Desenfoque de disco, no
+    // gaussiano: lo muy brillante (fuegos, gemas, chispas) se abre en círculos de bokeh. Cada
+    // muestra sólo cuenta si su propio desenfoque llega hasta este píxel: así lo enfocado no se
+    // emborrona con lo de alrededor ni deja halos.
+    float coc(float y){ return clamp((abs(y-focus)-.07)/.38,0.,1.)*maxR; }
     void main(){
-      // (más marcado: con 7 píxeles de desenfoque no se notaba; y un poco más de color, como las
-      // fotos de maquetas, que suelen estar saturadas)
-      float k=smoothstep(.08,.42,abs(uv.y-.5));
-      vec4 c=texture2D(T,uv);
-      vec3 cc=mix(vec3(dot(c.rgb,vec3(.299,.587,.114))),c.rgb,1.12);
-      if(k<.01){ gl_FragColor=vec4(cc,1.); return; }
-      vec4 a=vec4(0.); float r=k*18.;
-      for(int i=0;i<16;i++){ float an=float(i)*2.39996; float rr=sqrt((float(i)+.5)/16.)*r; a+=texture2D(T,uv+vec2(cos(an),sin(an))*rr*px); }
-      vec3 bl=a.rgb/16.;
-      gl_FragColor=vec4(mix(cc,mix(vec3(dot(bl,vec3(.299,.587,.114))),bl,1.12),smoothstep(0.,.25,k)),1.);
+      vec3 base=texture2D(T,uv).rgb;
+      float R=coc(uv.y);
+      vec3 col=base;
+      if(R>.6){
+        vec3 acc=base; float ws=1.;
+        for(int i=0;i<40;i++){
+          float an=float(i)*2.39996, r=sqrt((float(i)+.5)/40.)*R;
+          vec2 q=uv+vec2(cos(an),sin(an))*r*px;
+          vec3 sm=texture2D(T,q).rgb;
+          float w=smoothstep(r-1.5,r+.5,coc(q.y)+.5);
+          float l=dot(sm,vec3(.299,.587,.114));
+          w*=1.+smoothstep(.5,.95,l)*8.;           // los brillos pesan más: bokeh
+          acc+=sm*w; ws+=w;
+        }
+        col=acc/ws;
+      }
+      // aspecto de miniatura: colores de juguete (algo más de saturación y contraste), un poco más
+      // de luz en el centro y una viñeta suave hacia las esquinas
+      float l=dot(col,vec3(.299,.587,.114));
+      col=mix(vec3(l),col,1.22);
+      col=(col-.5)*1.08+.5+.012;
+      vec2 v=(uv-vec2(.5,focus))*vec2(1.,1.2);
+      col*=1.-.22*smoothstep(.15,.75,dot(v,v)*2.2);
+      gl_FragColor=vec4(clamp(col,0.,1.),1.);
     }`;
 
   // 6) composición final a resolución completa
@@ -1814,7 +1834,7 @@ if (!window.__psLuzCtx) {
       gl.uniform1f(u.flash, flash);
       setLights(u, w, h);
     });
-    if (tiltOn) pass(P.tilt, null, [['T', T.fin.t]], u => gl.uniform2f(u.px, 1 / w, 1 / h));
+    if (tiltOn) pass(P.tilt, null, [['T', T.fin.t]], u => { gl.uniform2f(u.px, 1 / w, 1 / h); gl.uniform1f(u.focus, 1 - center[1]); gl.uniform1f(u.maxR, 16 * h / 1080); });
     if (fresh) fresh--;
     profPoll();
     meterExposure(now, aOut);
