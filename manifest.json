@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "PokéSurvivor · Luces y sombras",
   "short_name": "PS Luces",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Iluminación en tiempo real para PokéSurvivor: sombras, luz global, niebla, agua, ambientes por escenario y variantes de árboles, rocas y hierba.",
   "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
   "action": {
