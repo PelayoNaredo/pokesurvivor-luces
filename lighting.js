@@ -737,9 +737,11 @@ if (!window.__psLuzCtx) {
     uniform sampler2D W,S,M,GI,B1,B2,B3,NB,EXPO,VOL,LQ;
     uniform vec2 res,cam,moonDir,center; uniform float art,aspect,time,dbg,quality; uniform vec4 giST; uniform float pixK,bandK,clouds;
     uniform vec3 ambient,moon,torch,fogCol,lowTint,highTint,shadowHue;
-    uniform float torchR,gi,bloom,shadowK,relief,exposure,vignette,sat,fog,shafts,motes,ao,rim;
+    uniform float torchR,gi,bloom,shadowK,relief,exposure,vignette,sat,fog,shafts,motes,ao,rim,fogSpr,ownK,sprCap;
     // luces puntuales (capa de sprites): xy en pantalla, radio (en alturas de pantalla), fuerza; y su color
     uniform vec4 lp[16]; uniform vec3 lc[16]; uniform float nLights;
+    // gemas y monedas: su propia lista (no compiten con fuegos y ataques por las 16 luces)
+    uniform vec4 gp[24]; uniform vec3 gc[24]; uniform float nGems;
     // clima (lluvia, nieve, sol abrasador, arena), impactos (centro, edad 0-1, fuerza) y pies en el agua
     uniform float auroraK,nightK; uniform vec4 wx, wx2; uniform vec4 shk[4]; uniform vec4 rp[8]; uniform float nRp, tm;
     // toque de cada escenario (ver BIOMES en el JS)
@@ -893,7 +895,9 @@ if (!window.__psLuzCtx) {
       // líquido del escenario: se reconoce por sus colores exactos (los del propio juego; ver FS_LIQ)
       vec4 lqv=texture2D(LQ,uvD);
       float liq=lqv.r*(1.-above);
-      float wallTop=step(.3,lqv.b)*step(lqv.b,.7), wallFace=step(.8,lqv.b);
+      // (la máscara de muros sale del suelo solo: un Pokémon que pasa por encima no es muro, y se
+      // le veía la forma del acantilado a través, como si fuera translúcido)
+      float wallTop=step(.3,lqv.b)*step(lqv.b,.7)*(1.-above), wallFace=step(.8,lqv.b)*(1.-above);
       // agua poco profunda junto a la orilla: el fondo se ve deformado por las ondas (refracción)
       if(liq>.5&&quality>1.5){
         float sh=1.-min(min(texture2D(LQ,uvD+vec2(6.*o.x,0.)).r,texture2D(LQ,uvD-vec2(6.*o.x,0.)).r),min(texture2D(LQ,uvD+vec2(0.,6.*o.y)).r,texture2D(LQ,uvD-vec2(0.,6.*o.y)).r));
@@ -1116,11 +1120,20 @@ if (!window.__psLuzCtx) {
         if(onSpr>.5&&mi<.5) bl+=lc[i]*L.w*fall*max(-dot(normalize(n.xy+1e-4),normalize(Ld.xy+1e-4)),0.)*(1.-n.z);
         if(matS>.01) ps+=lc[i]*L.w*fall*pow(max(dot(n,normalize(Ld+vec3(0.,0.,1.))),0.),shin);
       }
+      for(int i=0;i<24;i++){
+        if(float(i)>=nGems)break;
+        vec2 d=(gp[i].xy-uvL)*vec2(aspect,1.); float r=gp[i].z;
+        float fall=1./(1.+dot(d,d)/(r*r)*2.)*(1.-smoothstep(r*1.4,r*2.6,length(d)));
+        pl+=gc[i]*gp[i].w*fall*mix(.7,max(dot(n,normalize(vec3(d,r*.35))),0.),onSpr);
+      }
       // (y la luz del jugador: las hojas al otro lado se iluminan a contraluz)
       if(onSpr>.5&&mi<.5) bl+=torch*att*max(dot(normalize(n.xy+1e-4),normalize(dT+1e-4)),0.)*(1.-n.z)*.8;
+      // La luz la lleva el jugador: su propio sprite está dentro de ella y no la recibe de frente
+      // (a tope, un Pokémon blanco se quemaba en crema: blancos y grises del mismo tono, sin detalle)
+      float own=selfE*(1.-smoothstep(.04,.14,length(dT)));
       vec3 light=ambient*aoF*(.7+.3*moonVis)+pl+bl*vec3(.75,1.,.45)*1.6
                 +moon*ndl*moonVis*1.2
-                +torch*att*tdl*torchVis
+                +torch*att*tdl*torchVis*(1.-ownK*own)
                 +g*aoF+rimL
                 +flashCol*flash*aoF // relámpago: un fogonazo...
                 +flashCol*flash*moonVis*ndl*4. // ...que llega de lo alto, así que cada cosa echa su sombra
@@ -1251,7 +1264,10 @@ if (!window.__psLuzCtx) {
       // niebla y haces de luz (pasada aparte a 1/4 de resolución, ver FS_VOL)
       vec4 vol=texture2D(VOL,uv);
       float dens=vol.a; vec3 scatter=vol.rgb/max(dens,1e-3);
-      col=col*(1.-dens*.6)+vol.rgb;
+      // (sobre los sprites, menos: la niebla está pegada al suelo y ellos asoman por encima; con
+      // toda la niebla delante, un Pokémon claro perdía el contraste y parecía translúcido)
+      float fS=1.-fogSpr*selfE;
+      col=col*(1.-dens*.6*fS)+vol.rgb*fS;
 
       // partículas del escenario (luciérnagas, destellos, brasas, fuegos fatuos, esporas),
       // iluminadas por lo que haya cerca y con su propio brillo
@@ -1317,10 +1333,17 @@ if (!window.__psLuzCtx) {
       col=mix(col,alb,em*.85);
       // Los sprites conservan su color: con mucha luz cálida y la curva de tonos, un Gastly morado
       // junto al jugador se quedaba rosa pálido. Se mantiene su brillo y se le devuelve el tono.
-      float lc=lum(col), la=max(lum(alb),.04);
+      // La ganancia se mide con la luz sobre un gris neutro, no píxel a píxel: medida en cada píxel,
+      // la curva de tonos comprimía igual el blanco y el gris claro y el sprite salía plano y lavado,
+      // sin su sombreado (un Palkia blanco parecía translúcido).
+      float la=max(lum(alb),.04);
+      vec3 tg=vec3(.4)*light*exposure*(1.-.3*bk);
+      float lc=lum(tm>.5?agx(tg):aces(tg))/.4;
       // (no en lo casi negro, como los contornos: si la niebla o el polvo los aclaraban, al devolverles
       // su color se multiplicaba muchísimo y salían verde chillón; y menos cuanto más cargado está el aire)
-      col=mix(col,clamp(alb*min(lc/la,2.2),0.,1.),smoothstep(.3,.8,occ)*.55*smoothstep(.05,.18,lum(alb))*(1.-.75*max(wx.w,wx2.z)));
+      // (con tope: más de ~1,15 recortaba a la vez el blanco y el gris claro; y en lo claro manda
+      // más este color que el de la curva, que también los aplastaba)
+      col=mix(col,clamp(alb*min(lc,sprCap),0.,1.),smoothstep(.3,.8,occ)*(.55+.35*smoothstep(.45,.85,la))*smoothstep(.05,.18,lum(alb))*(1.-.75*max(wx.w,wx2.z)));
       col=mix(col,neb,core); // el interior de la grieta brilla por sí mismo, no lo apaga la noche
       float l=lum(col);
       col*=mix(lowTint,highTint,smoothstep(.15,.7,l));
@@ -1536,6 +1559,24 @@ if (!window.__psLuzCtx) {
 
   // las 16 luces más fuertes del frame, en coordenadas del shader (y hacia arriba, radio en alturas de pantalla)
   const lpBuf = new Float32Array(64), lcBuf = new Float32Array(48), lIdx = [];
+  // Las de gemas y monedas: las 24 más cerca del jugador. La 25.ª marca la frontera y las que
+  // quedan cerca de ella se apagan poco a poco: ninguna se enciende o se apaga de golpe al entrar
+  // o salir de la lista. (Antes competían con fuegos y ataques por las 16 luces: parpadeaban.)
+  const gemL = [], gpBuf = new Float32Array(96), gcBuf = new Float32Array(72), gIdx = [], gD = [];
+  function setGems(u, w, h) {
+    const n = gemL.length / 7, cx = w * .5, cy = h * .48;
+    gIdx.length = 0; gD.length = 0;
+    for (let i = 0; i < n; i++) { gIdx.push(i); gD[i] = Math.hypot(gemL[i * 7] - cx, gemL[i * 7 + 1] - cy); }
+    gIdx.sort((a, b) => gD[a] - gD[b]);
+    const k = Math.min(24, n), edge = n > 24 ? gD[gIdx[24]] : 1e9;
+    for (let j = 0; j < k; j++) {
+      const i = gIdx[j] * 7, fade = Math.min(1, Math.max(0, (edge - gD[gIdx[j]]) / (edge * .25)));
+      gpBuf.set([gemL[i] / w, 1 - gemL[i + 1] / h, gemL[i + 2] / h, gemL[i + 3] * fade], j * 4);
+      gcBuf.set([gemL[i + 4], gemL[i + 5], gemL[i + 6]], j * 3);
+    }
+    if (u['gp[0]']) { gl.uniform4fv(u['gp[0]'], gpBuf); gl.uniform3fv(u['gc[0]'], gcBuf); }
+    gl.uniform1f(u.nGems, tune.lights ? k : 0);
+  }
   function setLights(u, w, h) {
     const n = lights.length / 7;
     lIdx.length = 0; for (let i = 0; i < n; i++) lIdx.push(i);
@@ -1815,6 +1856,7 @@ if (!window.__psLuzCtx) {
       for (const k of ['ambient', 'moon', 'torch', 'fogCol', 'lowTint', 'highTint', 'shadowHue']) gl.uniform3fv(u[k], S[k]);
       gl.uniform2f(u.moonDir, S.moonDir[0], S.moonDir[1]);
       gl.uniform1f(u.shadowK, S.shadow);
+      gl.uniform1f(u.fogSpr, tune.fogSpr); gl.uniform1f(u.ownK, tune.ownK); gl.uniform1f(u.sprCap, tune.sprCap);
       for (const k of ['torchR', 'gi', 'bloom', 'relief', 'sat', 'fog', 'shafts', 'motes', 'ao', 'rim'])
         gl.uniform1f(u[k], S[k]);
       gl.uniform1f(u.exposure, S.exposure * expoGain);
@@ -1832,7 +1874,7 @@ if (!window.__psLuzCtx) {
       gl.uniform1f(u.riftA, rOn ? rift.a : 0);
       gl.uniform4f(u.moteP, bio.moteDen, bio.moteRise, bio.moteBlink, bio.moteSize);
       gl.uniform1f(u.flash, flash);
-      setLights(u, w, h);
+      setLights(u, w, h); setGems(u, w, h);
     });
     if (tiltOn) pass(P.tilt, null, [['T', T.fin.t]], u => { gl.uniform2f(u.px, 1 / w, 1 / h); gl.uniform1f(u.focus, 1 - center[1]); gl.uniform1f(u.maxR, 7 * h / 1080); });
     if (fresh) fresh--;
@@ -1881,7 +1923,7 @@ if (!window.__psLuzCtx) {
   let onFrame = null; // gancho de pruebas: se llama con el frame ya pintado (aún legible)
   // jmode 2: ruido anclado al mundo (no titila al mover la cámara). Medido con _test/flicker.js:
   // la mezcla temporal deja el parpadeo de las sombras en movimiento entre 2 y 4 veces más bajo.
-  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true, giK: .55, pix: true, bands: .35, tm: 1, wx: null, sway: true, noGameShadows: true, wxDim: .45, walls: true };
+  const tune = { jmode: 2, temporal: true, blend: .22, clampK: .2, fx: true, nb: true, blob: true, spr: true, lights: true, giK: .55, pix: true, bands: .35, tm: 1, wx: null, sway: true, noGameShadows: true, wxDim: .45, walls: true, fogSpr: .6, ownK: .35, sprCap: 1.15, pickupHalo: true, haloLight: .35, pickupArt: true };
 
   function snap(t) {
     if (tune.skip && tune.skip.snap) return;
@@ -1904,7 +1946,7 @@ if (!window.__psLuzCtx) {
   // las fotos, el borrado y el render sólo con la luz encendida.
   let frameId = 0, rift = null;
   C2.clearRect = function (x, y, w, h) {
-    if (this === ctx && depth === 0 && phase === 0) { phase = 1; frameId++; texts.length = 0; pathCmds.length = 0; }
+    if (this === ctx && depth === 0 && phase === 0) { phase = 1; frameId++; texts.length = 0; pathCmds.length = 0; halos.length = 0; gemL.length = 0; pkEmit.length = 0; }
     return _clear.call(this, x, y, w, h);
   };
   C2.save = function () {
@@ -2099,6 +2141,16 @@ if (!window.__psLuzCtx) {
     fx.fillStyle = fx.strokeStyle = '#fff';
   }
   function fxUpload() {
+    // (en la capa de emisión, el halo dejaba ver el suelo sin luz: un círculo más oscuro en su sitio)
+    for (const [m, arc, st] of halos) {
+      // una luz pequeña de su color donde estaba el halo (más débil que un fuego: no les quita sitio)
+      const x = m.a * arc[0] + m.c * arc[1] + m.e, y = m.b * arc[0] + m.d * arc[1] + m.f, c = hex(st), mx = Math.max(...c, .01);
+      gemL.push(x, y, Math.max(40, arc[2] * Math.hypot(m.a, m.b) * 3.2), tune.haloLight, c[0] / mx, c[1] / mx, c[2] / mx);
+    }
+    halos.length = 0;
+    atk.globalAlpha = 1; atk.imageSmoothingEnabled = false;
+    for (const [m, sp, x, y, w, h] of pkEmit) { fxT(m); _draw.call(atk, sp, x, y, w, h); }
+    pkEmit.length = 0;
     if (tune.skip && tune.skip.fxup) return;
     gl.bindTexture(gl.TEXTURE_2D, texFX);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fxCv);
@@ -2119,7 +2171,7 @@ if (!window.__psLuzCtx) {
   C2.beginPath = (o => function () { if (this === ctx) pathCmds.length = 0; return o.apply(this, arguments); })(C2.beginPath);
   for (const n of PATH_OPS) {
     const o = C2[n]; if (!o) continue;
-    C2[n] = function () { if (recording(this) && pathCmds.length < 4096) pathCmds.push([n, [...arguments], this.getTransform()]); return o.apply(this, arguments); };
+    C2[n] = function () { if ((recording(this) || haloRec(this)) && pathCmds.length < 4096) pathCmds.push([n, [...arguments], this.getTransform()]); return o.apply(this, arguments); };
   }
   // La sombrita del juego (una elipse negra semitransparente y aplanada bajo árboles, rocas, Pokémon
   // y objetos) era su forma de dar volumen sin luces. Con las sombras de verdad sobra: con la luz
@@ -2134,8 +2186,118 @@ if (!window.__psLuzCtx) {
     else return false;
     return al * c.globalAlpha <= .6;
   }
+  // El halo de gemas, monedas, esferas, objetos y altares: un disco plano de su color, translúcido
+  // (radio 9-19, y algunos laten). Con la luz encendida no se pinta: en su sitio va una luz puntual
+  // de su color que alumbra el suelo de verdad, en vez de un círculo pegado debajo.
+  // (a veces el juego los pinta antes que a los Pokémon, todavía en la fase del suelo: se apuntan
+  // y sus luces se añaden justo antes de pintar)
+  const halos = [];
+  const haloRec = c => c === ctx && (phase === 1 || phase === 2) && tune.fx && lit();
+  function isPumpkinGlow(c, a) {
+    if (a || pathCmds.length !== 1 || pathCmds[0][0] !== 'ellipse' || c.globalAlpha >= .35) return false;
+    const e = pathCmds[0][1], st = c.fillStyle;
+    if (st === '#ff9a3d') return e[2] > 20 && e[2] < 32 && e[3] > 12 && e[3] < 24;
+    return st === '#7b3cff' && e[2] > 30 && e[2] < 38 && e[3] > 9 && e[3] < 15; // (la grieta)
+  }
+  function isPickupHalo(c, a) {
+    if (a || pathCmds.length !== 1 || pathCmds[0][0] !== 'arc') return false;
+    const r = pathCmds[0][1][2], st = c.fillStyle;
+    return r >= 9 && r <= 19 && c.globalAlpha > .05 && c.globalAlpha < .55 && typeof st === 'string' && st[0] === '#';
+  }
+  // Gemas de experiencia y monedas: el juego las pinta con formas planas (un rombo de un color con
+  // un punto blanco; dos elipses que se estrechan al girar). Con la luz encendida se cambian por
+  // sprites de pixel art con contorno, facetas y relieve, del mismo tamaño y en el mismo sitio (con
+  // el mismo balanceo y el mismo giro). El píxel de arte del juego son 2 unidades del mundo.
+  const PK_PAL = {
+    '#7fe0ff': { o: '#1d4f8f', d: '#3592e0', m: '#5fd0ff', l: '#b8f4ff', h: '#ffffff' }, // experiencia
+    '#ffd95e': { o: '#5e3204', d: '#c97a0c', m: '#ffb92e', l: '#ffe58a', h: '#fffbe6' }, // experiencia grande
+    '#ffd23f': { o: '#5a3a04', d: '#b47a10', m: '#f2b51e', l: '#ffe070', h: '#fff8d8' }  // moneda
+  };
+  const GEM_ART = [ // 7×9: facetas con la luz arriba a la izquierda
+    '...o...',
+    '..oho..',
+    '.ohlmo.',
+    'ohllmmo',
+    'olllmdo',
+    'oddmddo',
+    '.odmdo.',
+    '..odo..',
+    '...o...'];
+  const GEM_ART_S = [ // 5×7 (la pequeña)
+    '..o..',
+    '.oho.',
+    'ohlmo',
+    'olmdo',
+    'odmdo',
+    '.odo.',
+    '..o..'];
+  const COIN_ART = [ // 8×8: canto oscuro, cara con relieve
+    '..oooo..',
+    '.ollllo.',
+    'olhmmmdo',
+    'olmlldmo',
+    'olmlldmo',
+    'olmddmdo',
+    '.oddddo.',
+    '..oooo..'];
+  const pkCache = new Map();
+  function pkSprite(art, pal, star) {
+    const key = art[0].length + art.length + pal.o + (star ? '*' : '');
+    let cv = pkCache.get(key);
+    if (cv) return cv;
+    cv = document.createElement('canvas'); cv.width = art[0].length; cv.height = art.length;
+    const x = cv.getContext('2d');
+    art.forEach((row, j) => [...row].forEach((ch, i) => { if (pal[ch]) { x.fillStyle = pal[ch]; x.fillRect(i, j, 1, 1); } }));
+    // destello: el brillo se abre en una crucecita de un píxel por lado
+    if (star) { x.fillStyle = pal.h; const hx = art[1].indexOf('h'); for (const [i, j] of [[hx - 1, 1], [hx + 1, 1], [hx, 0], [hx, 2]]) if (i >= 0) x.fillRect(i, j, 1, 1); }
+    pkCache.set(key, cv);
+    return cv;
+  }
+  const pkEmit = [];
+  let pkSkip = 0; // cuántos rellenos siguientes del juego son parte de la gema o moneda ya cambiada
+  function pickupArt(c, a) {
+    if (a) return false;
+    const st = c.fillStyle, pal = PK_PAL[st];
+    if (pkSkip > 0) {
+      // (el punto blanco de brillo y el centro de la moneda: ya van en el sprite)
+      if (st === 'rgba(255, 255, 255, 0.8)' || st === '#b8860b') { pkSkip--; return true; }
+      pkSkip = 0;
+    }
+    if (!pal || c.globalAlpha < .95) return false;
+    const n = pathCmds.length;
+    let cx, cy, w, h, art;
+    if (st !== '#ffd23f' && n === 5 && pathCmds[0][0] === 'moveTo' && pathCmds[4][0] === 'closePath') {
+      const top = pathCmds[0][1], bot = pathCmds[2][1], rt = pathCmds[1][1];
+      const r = (bot[1] - top[1]) / 2;
+      cx = top[0]; cy = (top[1] + bot[1]) / 2;
+      art = r < 5.5 ? GEM_ART_S : GEM_ART;
+      w = art[0].length * 2; h = art.length * 2;
+      if (!(rt[0] > cx)) return false;
+      pkSkip = 1;
+    } else if (st === '#ffd23f' && n === 1 && pathCmds[0][0] === 'ellipse') {
+      const e = pathCmds[0][1];
+      if (!(e[3] > 4 && e[3] < 8)) return false;
+      art = COIN_ART; cx = e[0]; cy = e[1];
+      h = 16; w = Math.max(2, Math.round(16 * e[2] / e[3] / 2) * 2); // (el giro: más estrecha, en píxeles enteros)
+      pkSkip = 2;
+    } else return false;
+    // un destello de vez en cuando, cada gema a su ritmo (por su posición en el mundo)
+    const seed = Math.abs(Math.sin(Math.round(cx) * 12.9898 + Math.round(cy / 8) * 78.233)) * 43758.5 % 1;
+    const star = art !== COIN_ART && ((performance.now() / 1000 + seed * 7) % 2.6) < .18;
+    const sp = pkSprite(art, pal, star);
+    const sm = c.imageSmoothingEnabled; c.imageSmoothingEnabled = false;
+    c.drawImage(sp, 0, 0, sp.width, sp.height, Math.round(cx - w / 2), Math.round(cy - h / 2), w, h);
+    c.imageSmoothingEnabled = sm;
+    // y brillan: van también a la capa de emisión (conservan su color con la noche y dan resplandor)
+    pkEmit.push([c.getTransform(), sp, Math.round(cx - w / 2), Math.round(cy - h / 2), w, h]);
+    return true;
+  }
   C2.fill = (o => function (a) {
-    if (recording(this) && tune.noGameShadows && isGameShadow(this, a)) return;
+    if (haloRec(this) && tune.pickupArt && pickupArt(this, a)) return;
+    if (haloRec(this) && tune.noGameShadows && isGameShadow(this, a)) return; // (también la de gemas y monedas, en la fase del suelo)
+    if (haloRec(this) && tune.pickupHalo && isPickupHalo(this, a)) { const c = pathCmds[0]; halos.push([c[2], c[1], this.fillStyle, this.globalAlpha]); return; }
+    // el resplandor de las calabazas y de la grieta (elipses translúcidas): no se pinta; ya tienen su luz
+    if (haloRec(this) && tune.pickupHalo && isPumpkinGlow(this, a)) return;
     if (recording(this) && isFx(this, this.fillStyle)) fxPath(this, 'fill', a);
     return o.apply(this, arguments);
   })(C2.fill);
@@ -2328,7 +2490,12 @@ if (!window.__psLuzCtx) {
     if (!byRect) { byRect = new Map(); sprInfo.set(img, byRect); }
     const key = sx + ',' + sy + ',' + sw + ',' + sh;
     const d = byRect.get(key);
-    if (d !== undefined) return d; // (false: en la cola, todavía sin analizar)
+    // Mientras un fotograma nuevo espera en la cola, se usa el último ya analizado de la misma hoja y
+    // del mismo tamaño (el fotograma de al lado: casi la misma silueta). Si no, la sombra del jugador
+    // se apagaba un instante cada vez que cambiaba de dirección o de animación.
+    const prev = byRect.last && byRect.last.sw === sw && byRect.last.sh === sh ? byRect.last.d : false;
+    if (d) { byRect.last = { sw, sh, d }; return d; }
+    if (d !== undefined) return d === false ? prev : d; // (false: en la cola, todavía sin analizar)
     // Nada se analiza dentro del frame: al moverse entraban decenas de sprites nuevos de golpe
     // y cada lectura de píxeles era un tirón. Va a una cola que se vacía en los ratos libres,
     // como mucho ~3 ms seguidos; hasta entonces ese sprite sale sin sombra (un instante).
@@ -2336,7 +2503,7 @@ if (!window.__psLuzCtx) {
     if (sw < 1 || sh < 1 || sw * sh > 200 * 200 || sx !== Math.floor(sx) || sy !== Math.floor(sy)) { byRect.set(key, null); return null; }
     sprQueue.push([img, sx, sy, sw, sh, byRect, key]);
     if (!sprQueued) { sprQueued = true; idle(runAnalysis); }
-    return false;
+    return prev;
   }
   const sprQueue = []; let sprQueued = false;
   const idle = fn => window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 150 }) : setTimeout(fn, 16);
