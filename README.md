@@ -1,14 +1,21 @@
-# PokéSurvivor · Lights & Shadows
+# PokéSurvivor Lights & Shadows: a free graphics mod (shaders) for PokéSurvivor
 
-A browser extension that adds real-time lighting to [PokéSurvivor](https://pokesurvivor.com/):
-shadows, bouncing light, fog, water reflections and a unique mood for every area. It doesn't
-change the game itself, and it only runs on pokesurvivor.com.
+**PokéSurvivor Lights & Shadows** is a free browser extension and graphics mod for
+[PokéSurvivor](https://pokesurvivor.com/), the Pokémon survivor-style browser game. It adds
+real-time dynamic lighting with WebGL shaders: real shadows, bouncing light (global
+illumination), fog, water reflections, weather effects and a unique mood for every area. It
+doesn't change the game itself, it only runs on pokesurvivor.com, and it works in Chrome, Edge,
+Brave and Opera.
+
+> 🇪🇸 **En español:** extensión gratuita para PokéSurvivor que añade luces, sombras reales,
+> reflejos, niebla y clima con shaders. Funciona en Chrome, Edge, Brave y Opera. Los pasos de
+> instalación están más abajo («How to install»).
 
 | Original | With the extension |
 | --- | --- |
-| ![Original game](docs/bosque-antes.jpg) | ![With lights and shadows](docs/bosque-despues.jpg) |
+| ![PokéSurvivor original graphics in the forest](docs/bosque-antes.jpg) | ![PokéSurvivor with the lighting mod: dynamic lights and shadows in the forest](docs/bosque-despues.jpg) |
 
-![Palkia's rift: shadows with the real shape, water and glowing attacks](docs/grieta-agua.jpg)
+![PokéSurvivor shaders mod: Palkia's rift with real shadows, water reflections and glowing attacks](docs/grieta-agua.jpg)
 
 ## How to install
 
@@ -130,6 +137,9 @@ On the extensions page, click **Remove** on the extension's card. You can then d
 - **Variants of trees, dead trees, crystals, rocks and grass**, drawn with the game's own
   painting code and each area's palette, not with new artwork.
 - **Ground decoration:** flowers, tufts and pebbles that never show up in water.
+- **New pixel-art gems and coins:** faceted experience gems that sparkle now and then, and coins
+  with a rim and relief that still spin. They glow and light the ground around them instead of
+  sitting on a flat coloured circle (pumpkins too).
 - **Auto exposure**, so neither bright nor dark areas look washed out.
 
 ## Good to know
@@ -144,6 +154,28 @@ On the extensions page, click **Remove** on the extension's card. You can then d
   (if you have browser sync on, the browser copies them between your devices).
 - Chrome may show a notice about developer-mode extensions when it starts. That's normal for
   anything installed this way; you can close it.
+
+## FAQ
+
+**Is it free? Is it safe?**
+Yes, it's free and open source. It doesn't send anything anywhere, doesn't read your account and
+only runs on pokesurvivor.com. You can read every line of the code in this repository.
+
+**Can I get banned or lose my progress?**
+It doesn't touch the game's logic, saves or network traffic: it only redraws what the game
+already paints on screen, with light on top. Your progress is the same with it on or off.
+
+**Does it work on phones, Firefox or Safari?**
+No. It works on a computer with Chrome, Edge, Brave or Opera.
+
+**Will it slow the game down?**
+It needs a reasonably recent graphics card or integrated GPU. Quality adapts by itself to keep
+up with your screen's refresh rate, and you can pick **Original** in the menu to switch it off at
+any time.
+
+**How do I turn it off without uninstalling it?**
+Click the moon icon and choose **Original**, or press **L** during a game until the lighting is
+off.
 
 ## Files
 
